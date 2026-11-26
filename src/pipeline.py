@@ -18,7 +18,7 @@ from src.ingest.json_handler import parse_json_entry, transform_json_iterative
 from src.ingest.profiler import infer_role_from_header, refine_entry_roles, resolve_key_role
 from src.ingest.router import maybe_rename_rel_path, scan_input_tree
 from src.ingest.text_handler import parse_text_entry, rewrite_text_preserving_lines
-from src.ingest.xml_handler import parse_xml_entry, sanitize_xml_text
+from src.ingest.xml_handler import inject_psn_xml, parse_xml_entry, sanitize_xml_text
 from src.linkage.cluster import link_and_assign_pseudonyms
 from src.linkage.evidence import extract_all_evidence
 from src.models import FileEntry
@@ -351,6 +351,13 @@ def _rewrite_entry(
 
         def _scrub_header(h: str) -> str:
             cleaned, spans = resolve_and_scrub(h, guard, harvester)
+            id_kinds = ("MRN", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "EMAIL", "INSURANCE_ID")
+            if spans and not any(sp.kind in id_kinds for sp in spans):
+                # A header is a label: a one-word name hit inside a compound label ("Village/Mohalla") is not a
+                # person. Keep it unless the whole header is that name or the hit is a multi-word name.
+                whole = re.sub(r"[\W_]+", " ", h).strip().lower()
+                if all(len(sp.text.split()) < 2 and sp.text.strip().lower() != whole for sp in spans):
+                    return h
             for sp in spans:
                 entity_counts[sp.kind] += 1
             if any(sp.kind in ("MRN", "PHONE", "AADHAAR", "ABHA_NUMBER") for sp in spans):
@@ -635,7 +642,10 @@ def _rewrite_entry(
                     return shifted
             return _scrub_str(s, psn=psn, inject_psn=bool(psn), rec_uid=uid)
 
-        return sanitize_xml_text(entry.parsed_data, scrub_fn=_scrub_xml)
+        out_xml = sanitize_xml_text(entry.parsed_data, scrub_fn=_scrub_xml)
+        if psn and psn not in out_xml:
+            out_xml = inject_psn_xml(out_xml, psn)
+        return out_xml
 
     # Text / WhatsApp preserving exact line counts and ensuring PSN appears inside linked doc
     rec = entry.records[0] if entry.records else None

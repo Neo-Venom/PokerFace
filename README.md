@@ -4,6 +4,19 @@
 
 Project RAKSHA is an **offline, CPU-only, LLM-free Two-Pass Hybrid Privacy Firewall** for messy, multi-hospital Indian healthcare exports (CSVs, TSVs, deeply nested JSONs, FHIR R4 Bundles, HL7 CDA XML, and free-text English/Devanagari/Hinglish clinical notes and WhatsApp forwards). It strips direct identifiers and hidden-channel leaks while preserving clinical facts, builds longitudinal patient links across scripts and facilities under keyed HKDF-HMAC pseudonyms (`PSN-XXXXXXXX`), defends against demographic and temporal re-identification attacks (`A1–A7`), and enforces a fail-closed pre-emission egress audit gate.
 
+**USP (what makes it different)**
+
+* **Header-agnostic by design:** every field is judged by its label *and* its values, so `holder`, `abode`, `रोगी` or a
+  remarks column full of "C/O fever" are classified correctly; multi-patient tables are recognised by structure. No
+  practice file names or hospital codes appear in the code; ID formats are recognised by shape.
+* **Cross-script identity with safety rails:** one patient is linked across Latin, Devanagari and Hinglish
+  (मोहम्मद ≈ Md. ≈ Mohammad, नायर ≈ Nair through a shared UHID), while homonyms, twins, a father and son with one name
+  and phone, and spouses sharing a phone are kept apart; a record that fits two people equally stays unlinked.
+* **Hostile-export hardened:** spreadsheet formulas neutralised, NUL bytes, `NaN` JSON, regex/buffer bombs and unsafe
+  file names handled without crashing or leaking, and every output re-scanned by an egress gate before exit.
+* **Measured on data we did not tune on:** a seeded adversarial generator (held-out name/header pool, a "hard" level of
+  hostile traps) scored with the toolkit's own `validate_output.py` / `check_dev.py` and an ATTACKS.md attacker.
+
 ---
 
 ## 1. Setup & Execution

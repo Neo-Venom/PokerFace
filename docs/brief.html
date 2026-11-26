@@ -1,88 +1,77 @@
 <!doctype html><html><head><meta charset="utf-8"><title>Project RAKSHA - Project Brief</title><style>
-@page { size: A4; margin: 11mm 12mm; }
-body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 9.6pt; line-height: 1.26; color: #1d1d1f; margin: 0; }
-h1 { font-size: 15pt; margin: 0 0 2px 0; }
-h2 { font-size: 11pt; margin: 7px 0 3px 0; padding-bottom: 1px; border-bottom: 1px solid #c9ccd1; }
-p { margin: 2px 0 4px 0; }
-ul { margin: 2px 0 4px 16px; padding: 0; }
-li { margin: 1px 0; }
-.sub { color: #555; font-size: 9.5pt; margin-bottom: 4px; }
-table { border-collapse: collapse; width: 100%; font-size: 9.5pt; margin: 3px 0 4px 0; }
-th, td { border: 1px solid #c9ccd1; padding: 2px 4px; text-align: left; vertical-align: top; }
+@page { size: A4; margin: 10mm 11mm; }
+body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10pt; line-height: 1.22; color: #1d1d1f; margin: 0; }
+h1 { font-size: 14pt; margin: 0 0 1px 0; }
+h2 { font-size: 11pt; margin: 5px 0 2px 0; padding-bottom: 1px; border-bottom: 1px solid #c9ccd1; }
+p { margin: 1px 0 3px 0; }
+ul { margin: 1px 0 3px 15px; padding: 0; }
+li { margin: 0; }
+.sub { color: #444; font-size: 10pt; margin-bottom: 3px; }
+table { border-collapse: collapse; width: 100%; font-size: 10pt; margin: 2px 0 3px 0; }
+th, td { border: 1px solid #c9ccd1; padding: 1px 3px; text-align: left; vertical-align: top; }
 th { background: #eef1f5; }
-td.n { text-align: right; font-variant-numeric: tabular-nums; }
-.flow { display: flex; gap: 4px; align-items: stretch; margin: 4px 0; }
-.box { flex: 1; border: 1px solid #8a94a6; border-radius: 4px; padding: 3px 5px; font-size: 9pt; background: #f7f8fa; }
-.box b { display: block; font-size: 9.5pt; }
-.arrow { align-self: center; font-size: 12pt; color: #8a94a6; }
-.page2 { }
-code { font-family: Consolas, monospace; font-size: 9pt; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.flow { display: flex; gap: 3px; align-items: stretch; margin: 3px 0; }
+.box { flex: 1; border: 1px solid #8a94a6; border-radius: 4px; padding: 2px 4px; font-size: 10pt; background: #f7f8fa; line-height: 1.15; }
+.box b { display: block; }
+.arrow { align-self: center; font-size: 11pt; color: #8a94a6; }
+code { font-family: Consolas, monospace; font-size: 10pt; }
 </style></head><body>
-<h1>Team Poker Face: RAKSHA, a privacy firewall that reads what a field contains, not what it is called</h1>
-<div class="sub">Track 3 · Secret Wards · Members: <span style="background:#fff3bf">[ADD MEMBER NAMES]</span> · Repo: github.com/suyashkrishangarg/PokerFace · offline · CPU-only · no LLMs or pretrained models</div>
-
-<h2>1. In one paragraph</h2>
-<p>RAKSHA de-identifies messy multi-hospital Indian exports (CSV/TSV in four encodings, nested JSON, FHIR R4, notes, WhatsApp forwards) in English,
-Devanagari Hindi and Hinglish. It links each patient across files and scripts under keyed pseudonyms and defends the release against
-the voter-roll attacker. Its core idea is <b>two independent signals for every field</b>: the label <i>and</i> the values. A column called
-<code>holder</code>, <code>abode</code> or <code>रोगी</code> is recognised as a name or address column from its contents. PII found anywhere is then harvested
-and swept from every other channel (free text, keys, headers, filenames, base64). The system keeps working when headers, ID formats and name pools change.</p>
+<h1>1. Team Poker Face: RAKSHA, a privacy firewall that reads what a field contains, not what it is called</h1>
+<div class="sub">Track 3 Secret Wards · Members: <span style="background:#fff3bf">[ADD MEMBER NAMES]</span> · github.com/suyashkrishangarg/PokerFace · offline, CPU-only, no LLMs or pretrained models</div>
+<p><b>Pitch:</b> every field is judged by two independent signals, its label <i>and</i> its values, so unseen headers, ID formats and
+name pools still resolve; PII found anywhere is harvested and swept from every other channel, and one patient keeps one keyed pseudonym
+across English, Devanagari and Hinglish without merging different people.</p>
 
 <h2>2. Architecture</h2>
 <div class="flow">
-<div class="box"><b>1 Ingest</b>sorted walk, SHA-256, strict decode (4 encodings), quarantine, ragged-row repair</div><div class="arrow">→</div>
-<div class="box"><b>2 Profile</b>header synonyms + value shapes + name/address likeness</div><div class="arrow">→</div>
-<div class="box"><b>3 Detect &amp; sweep</b>clinical shield → ID shapes → context NER → sweep of all channels</div><div class="arrow">→</div>
-<div class="box"><b>4 Link</b>evidence → blocking → IDF Fellegi–Sunter → constrained union-find → HMAC PSN</div><div class="arrow">→</div>
-<div class="box"><b>5 Privacy</b>per-patient date shift, age bands, PIN and rare-diagnosis roll-up</div><div class="arrow">→</div>
-<div class="box"><b>6 Egress gate</b>re-scan of every output, file name and decoded payload</div>
+<div class="box"><b>Ingest</b>SHA-256, strict decode, quarantine, row repair</div><div class="arrow">→</div>
+<div class="box"><b>Profile</b>header synonyms + value shapes</div><div class="arrow">→</div>
+<div class="box"><b>Detect</b>clinical shield, ID shapes, context NER, sweep</div><div class="arrow">→</div>
+<div class="box"><b>Link</b>blocking, Fellegi–Sunter, vetoes, HMAC PSN</div><div class="arrow">→</div>
+<div class="box"><b>Privacy</b>date shift, age bands, roll-ups</div><div class="arrow">→</div>
+<div class="box"><b>Egress gate</b>re-scan → sanitized/, report, records</div>
 </div>
 
 <h2>3. How each part works</h2>
 <ul>
-<li><b>Ingestion:</b> every file is identified by SHA-256 and the input is opened read-only. Formats are sniffed by bytes as well as extension, so JSON behind <code>.csv</code> is still parsed. PDF, JPEG, XLSX, XML with DTD/entities (defusedxml), truncated JSON, JSON deeper than 500 levels and invalid UTF-8 are quarantined, never copied. Unquoted commas are repaired before profiling. Hostile exports are handled without losing data: stray NUL bytes are blanked, <code>NaN</code> JSON and free-text lines over 64 KiB are quarantined, and so are files named with <code>;</code>, <code>$(</code> or <code>..</code>.</li>
-<li><b>Detection:</b> (a) a <i>clinical shield</i> protects doctors (<code>Dr.</code> plus learned doctor full names), doses (<code>1-0-1</code>, <code>BD x 5 days</code>), labs, ICD/LOINC codes, wards (<code>Ward 7 (Surgery)</code>), eponyms, <code>K/C/O</code>, <code>H/O</code>, <code>C/O &lt;symptom&gt;</code> and ASHA workers. The lexicon is learned at run time from clean documents, drug and diagnosis fields.
-(b) <i>Shape detectors</i>: any hospital ID shape (prefix + separators + digits), phones in any grouping, Aadhaar (no Verhoeff gate), ABHA, PAN, PINs in address context.
-(c) <i>Context NER</i> for unlabelled people: <code>Pt X (62M)</code>, <code>brought by son X</code>, <code>unke pati X ne</code>, <code>पिता: X</code>, <code>Bed 7: X</code>, honorifics (ji, sahab, didi, garu…), WhatsApp senders. Facility and label words can never become names.
-(d) <i>Harvest-then-sweep</i>: everything found in pass 1 is swept exactly (normalised, Devanagari digits, homoglyph-folded) from all channels after decoding %XX, HTML entities, <code>\uXXXX</code>, base64 and zero-width tricks. Address fields <i>fail closed</i>: only public district/state names survive.</li>
-<li><b>Linkage &amp; pseudonyms:</b> Devanagari is romanised and folded (inherent-a, nukta, vowels, so मोहम्मद ≈ Md. ≈ Mohammad). Multi-key blocking feeds IDF-weighted Fellegi–Sunter scores. Clusters merge in descending score order with hard vetoes (gender, DOB, Aadhaar/ABHA/PAN, conflicting IDs of one hospital system, conflicting names or relatives). Spelling, transliteration or corrupted-age conflicts are waived only when two independent single-person IDs agree, and a record without its own ID that fits two people equally (father and son with one name and phone) stays unlinked. Family phones (different given names) carry little weight, and multi-patient tables (IDs or names in ≥2 headers or keys) are never assigned to one person. Pseudonyms are HKDF-derived HMAC (<code>PSN-XXXXXXXX</code>): stable within a release, unlinkable across secrets.</li>
-<li><b>Privacy layer:</b> each patient gets a secret HMAC date shift (30–180 days) applied to every format (ISO, d/m/y, m/d/y, dd-Mon-yyyy, "June 8, 2025", d/m/yy, Devanagari digits, year-less dates), so length of stay and visit gaps stay exact. Age bands always contain the true age (5→10→20 years by cohort size, 85+ top-coded). Village → [ADDRESS], tehsil suppressed when rare, PIN → 3-digit prefix or suppressed, and diagnoses shared by fewer than 4 patients are rolled up.</li>
-<li><b>Security:</b> <code>RAKSHA_SECRET</code> is HKDF-split into pseudonym, shift, filename and vault keys, then removed from the environment and never written. The exception hook strips PII from tracebacks, nothing goes to TMP or HOME, and an optional AES-256-GCM vault holds quarantined originals with keys kept apart from data. Files whose names contain PII are renamed with a keyed tag and declared by hash in <code>report.json</code>. Spreadsheet formulas in CSV cells are neutralised (OWASP CSV injection).</li>
+<li><b>Ingestion:</b> files are hashed and sniffed by bytes (JSON behind <code>.csv</code> is parsed). PDF/JPEG/XLSX/ZIP, XML with DTDs, truncated or <code>NaN</code> JSON, JSON deeper than 500, invalid UTF-8, free-text lines over 64 KiB and unsafe file names (<code>;</code> <code>$(</code> <code>..</code>) are quarantined; stray NUL bytes are blanked; ragged rows are repaired before profiling.</li>
+<li><b>Detection (3 scripts):</b> a clinical shield protects doctors, doses (<code>1-0-1</code>), labs, eponyms, wards, <code>K/C/O</code> and <code>C/O &lt;complaint&gt;</code>, with a lexicon learned at run time. Shape detectors catch any hospital ID, phones in any grouping, Aadhaar/ABHA/PAN and cue-less PINs. Context NER finds unlabelled people (<code>Pt X (62M)</code>, <code>unke pati X ne</code>, <code>पिता: X</code>, honorifics, mixed-script names). Pass-1 finds are swept from all channels after decoding %XX, entities, <code>\uXXXX</code>, base64, homoglyphs and zero-width tricks.</li>
+<li><b>Linkage &amp; pseudonyms:</b> Devanagari is romanised and folded; multi-key blocking feeds IDF-weighted Fellegi–Sunter scores; clusters merge by descending score under hard vetoes (sex, DOB, Aadhaar/ABHA/PAN, two IDs of one hospital system, conflicting names or relatives). Spelling or corrupted-age conflicts are waived only when two independent IDs agree; a record that fits two people equally stays <code>null</code>. PSNs are HKDF-derived HMAC, stable per secret.</li>
+<li><b>Privacy layer:</b> a per-patient HMAC date shift (30–180 days) keeps every stay and gap exact; truthful age bands; tehsil/PIN coarsened by cohort; rare diagnoses rolled up; impossible ages become <code>[AGE]</code>.</li>
 </ul>
 
 <h2>4. USP</h2>
 <ul>
-<li><b>Header-agnostic by design:</b> roles come from values as well as labels, and multi-patient tables are recognised by structure. No practice file names or hospital codes appear in the code, and ID formats are recognised by shape.</li>
-<li><b>Cross-script identity with safety rails:</b> the same patient is linked across Latin, Devanagari and Hinglish, while homonyms, spouses sharing a phone and same-hospital re-IDs are kept apart (0 false merges on all six test sets).</li>
-<li><b>Measured on data we did not tune on:</b> a 200+ file adversarial generator with a held-out vocabulary (pool B: new names and header labels) and a "hard" level of hostile-export traps, scored with the toolkit's official checkers.</li>
+<li><b>Header-agnostic:</b> labels and values are both evidence, so <code>holder</code>, <code>abode</code>, <code>रोगी</code> or a remarks column of "C/O fever" are classified correctly; no practice names or hospital codes in the code.</li>
+<li><b>Cross-script identity with safety rails:</b> मोहम्मद ≈ Md. ≈ Mohammad and नायर ≈ Nair link; homonyms, twins, a father and son with one name and phone, and spouses sharing a phone stay apart (0 false merges on every set).</li>
+<li><b>Tested on what we did not tune on:</b> a seeded adversarial generator with a held-out name/header pool and a hard level of hostile-export traps, scored with the toolkit's own checkers.</li>
 </ul>
 
-<div class="page2"></div>
 <h2>5. Privacy–utility trade-off (measured)</h2>
-<p>All runs use the official <code>validate_output.py</code> (CONTRACT OK on every set) and <code>check_dev.py</code>, a local estimator of SCORING.md, and our attacker
-(A3 record linkage, A4 pooled-profile re-identification, A5 targeted attack with global-shift recovery, shown relative to the same attack on the raw input).
-Every set is run three times: the same secret twice gives byte-identical output, and a new secret shares 0 pseudonyms.</p>
-<table><tr><th>Measure</th><th>Practice (dev)</th><th>Chaos s101</th><th>Chaos s202</th><th>Gauntlet B (held out)</th><th>Hard H7</th><th>Hard H11 (held out)</th></tr><tr><td>Local score /100 (SCORING.md estimate)</td><td class='n'>98.7</td><td class='n'>98.4</td><td class='n'>98.5</td><td class='n'>99.5</td><td class='n'>99.5</td><td class='n'>99.5</td></tr><tr><td>Name-token leak rate (official key semantics)</td><td class='n'>0.00%</td><td class='n'>0.00%</td><td class='n'>0.00%</td><td class='n'>0.00%</td><td class='n'>0.00%</td><td class='n'>0.01%</td></tr><tr><td>Direct IDs / full names surviving (decoded)</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td></tr><tr><td>Medical probes kept</td><td class='n'>4855/4855</td><td class='n'>4855/4855</td><td class='n'>4855/4855</td><td class='n'>4963/4963</td><td class='n'>5005/5006</td><td class='n'>5070/5070</td></tr><tr><td>Linking F0.5</td><td class='n'>1.00</td><td class='n'>0.99</td><td class='n'>0.99</td><td class='n'>1.00</td><td class='n'>1.00</td><td class='n'>1.00</td></tr><tr><td>False merges (PSNs spanning 2 people)</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td></tr><tr><td>Homonym pairs kept apart</td><td class='n'>2/2</td><td class='n'>2/2</td><td class='n'>2/2</td><td class='n'>2/2</td><td class='n'>2/2</td><td class='n'>2/2</td></tr><tr><td>Attack risk vs raw: A3 / A4 / A5 (%)</td><td class='n'>3.2 / 12.8 / 8.0</td><td class='n'>3.1 / 10.6 / 8.2</td><td class='n'>3.1 / 10.6 / 7.3</td><td class='n'>3.7 / 2.3 / 1.5</td><td class='n'>3.7 / 1.7 / 2.5</td><td class='n'>3.6 / 1.7 / 1.5</td></tr><tr><td>Length of stay preserved</td><td class='n'>0/0</td><td class='n'>0/0</td><td class='n'>0/0</td><td class='n'>76/76</td><td class='n'>64/64</td><td class='n'>76/76</td></tr><tr><td>Run time (2 CPU budget not enforced)</td><td class='n'>10s</td><td class='n'>10s</td><td class='n'>10s</td><td class='n'>15s</td><td class='n'>17s</td><td class='n'>18s</td></tr></table>
-<p>Before the generalisation work the same pipeline scored <b>55.7</b> on Gauntlet A (linking F0.5 0.02, 36 direct identifiers surviving); it scored 98.5 on the practice set, which is the memorisation gap the hidden chaos round targets. Today Gauntlet A scores <b>99.5</b> and the 60-patient, 6,000-row A21 <b>99.2</b>.</p>
-<p><b>Choices and their cost.</b> Per-patient shifts keep every interval exact; a global shift would be recovered by A5 from two re-identified people.
-5-year age bands widen only where a band holds fewer than 5 patients, which costs a little generalisation utility (0.9 → 0.8 per field) and lowers A3/A4.
-Districts are kept (research value, a public area), villages and house details are removed, tehsil and PIN are coarsened by cohort size, and rare
-diagnoses are rolled up to the ICD block. Within the practice release, 62.5% of patients are still unique on (age band, sex, district) alone, but the
-4-5x larger population register means the attacker confidently re-identifies only the A4 share above.</p>
+<p>Official <code>validate_output.py</code>: CONTRACT OK on every set. Practice data via <code>check_dev.py</code>: 0 of 3,230 personal values visible
+(0.0% in Latin, Devanagari and Hinglish), 4,855/4,855 medical values kept, linking precision 1.00, recall 1.00, F0.5 1.00. Attack columns use our
+ATTACKS.md attacker (A3 record linkage, A4 pooled profile, A5 targeted with global-shift recovery) relative to the raw input.</p>
+<table><tr><th>Measured (3 runs per set)</th><th>Practice (dev)</th><th>Chaos s202</th><th>Gauntlet B (held out)</th><th>A21 (6k rows)</th><th>Hard H7</th><th>Hard H11 (held out)</th></tr><tr><td>Local score /100 (SCORING.md estimate)</td><td class='n'>98.7</td><td class='n'>98.5</td><td class='n'>99.5</td><td class='n'>99.2</td><td class='n'>99.5</td><td class='n'>99.5</td></tr><tr><td>Name tokens leaked (all scripts)</td><td class='n'>0.0%</td><td class='n'>0.0%</td><td class='n'>0.0%</td><td class='n'>0.0%</td><td class='n'>0.0%</td><td class='n'>0.0%</td></tr><tr><td>Direct IDs / full names surviving</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td><td class='n'>0</td></tr><tr><td>Medical values kept</td><td class='n'>4855/4855</td><td class='n'>4855/4855</td><td class='n'>4963/4963</td><td class='n'>8648/8649</td><td class='n'>5005/5006</td><td class='n'>5070/5070</td></tr><tr><td>Linking F0.5 / false merges</td><td class='n'>1.00 / 0</td><td class='n'>0.99 / 0</td><td class='n'>1.00 / 0</td><td class='n'>1.00 / 0</td><td class='n'>1.00 / 0</td><td class='n'>1.00 / 0</td></tr><tr><td>Attack risk vs raw A3 / A4 / A5 (%)</td><td class='n'>3 / 13 / 8</td><td class='n'>3 / 11 / 7</td><td class='n'>4 / 2 / 2</td><td class='n'>4 / 2 / 6</td><td class='n'>4 / 2 / 2</td><td class='n'>4 / 2 / 2</td></tr><tr><td>Length of stay kept exactly</td><td class='n'>n/a</td><td class='n'>n/a</td><td class='n'>76/76</td><td class='n'>106/106</td><td class='n'>64/64</td><td class='n'>76/76</td></tr><tr><td>Run time / peak RSS</td><td class='n'>10 s / 56 MB</td><td class='n'>10 s / 58 MB</td><td class='n'>15 s / 124 MB</td><td class='n'>38 s / 239 MB</td><td class='n'>17 s / 123 MB</td><td class='n'>18 s / 125 MB</td></tr></table>
+<p>Before the generalisation work the same code scored <b>55.7</b> on Gauntlet A (F0.5 0.02, 36 direct IDs surviving) while scoring 98.5 on practice data; now Gauntlet A scores <b>99.5</b> and Chaos s101 <b>98.4</b>. Same secret twice gives byte-identical output; a new secret shares 0 pseudonyms.</p>
+<p><b>Choices and cost.</b> Per-patient shifts keep stays exact while a global shift would fall to A5. Age bands are 5 years, widened only for
+small cohorts (truthful, 85+ top-coded). Districts are kept (public, research value); house, locality, landmark and village are removed; tehsil
+and PIN coarsen by cohort. <b>Residual risk, honestly:</b> inside the small practice release every patient is still unique on (age band, district,
+admission week, diagnosis), 30/48 even on (age band, sex, district). The defence is that released weeks are shifted per patient (only 9/48
+coincide with any true week) and the attacker's register is 4–5x larger; A4 stays at about 13% of the raw risk.</p>
 
 <h2>6. Security design ("assume the server is breached")</h2>
 <ul>
-<li>No raw data is persisted: parsing happens in memory, quarantined originals are either not written or sealed with AES-256-GCM (AAD = file hash) under a vault key derived from the release secret, and the input is never modified.</li>
-<li>The keys never touch disk or logs: the secret is removed from the environment after HKDF, sub-keys are domain-separated, and different secrets give unlinkable releases (pseudonyms and shifts change).</li>
-<li>The egress gate re-scans every output file, file name, <code>report.json</code> and <code>records.jsonl</code> (base64 decoded) for harvested identifiers and the secret before exit. stdout and stderr carry only counts.</li>
+<li>Nothing raw or intermediate is written: parsing is in memory, the input is read-only, quarantined originals are not copied (optional AES-256-GCM vault, AAD = file hash).</li>
+<li><code>RAKSHA_SECRET</code> is HKDF-split into pseudonym, shift, file-name and vault keys, removed from the environment and never written; different secrets give unlinkable releases.</li>
+<li>Logs carry counts only; the exception hook strips PII; nothing goes to TMP/HOME. An egress gate re-scans every output, file name, report and records (base64-decoded) before exit; CSV formulas are neutralised (OWASP).</li>
 </ul>
 
 <h2>7. Known limitations</h2>
 <ul>
-<li>Names written only in scripts other than Latin/Devanagari (Tamil, Bengali…) rely on context cues and the harvest from structured fields; there is no script-specific transliteration.</li>
-<li>English-origin names transliterate imperfectly (मैथ्यू ≠ Mathew). Such records link only through a shared ID, otherwise they stay separate, which is the safe choice for precision.</li>
-<li>A fragment carrying only a first name and a relative's first name is linked only if that pair is unique. Truly ambiguous fragments stay unlinked by design.</li>
-<li>Address fields fail closed: a hospital or landmark named inside an address cell is redacted too (small utility loss, no privacy loss).</li>
-<li>The attack numbers come from our own implementation of ATTACKS.md, and the official attacker may weigh evidence differently. Run time was measured on a 12-core laptop, and the 2-CPU sandbox will be slower but stays far inside the 15-minute limit.</li>
+<li>Names written only in other Indic scripts (Tamil, Bengali) rely on context cues and structured-field harvest; no script-specific transliteration.</li>
+<li>English-origin names transliterate imperfectly (मैथ्यू ≠ Mathew): such records link only through a shared ID.</li>
+<li>Within a small release, quasi-identifier uniqueness stays high (above); wider bands for singleton cohorts are a policy knob (<code>config/policy.yaml</code>).</li>
+<li>Attack numbers come from our implementation of ATTACKS.md; run times are from a 12-core laptop (the 2-CPU sandbox is slower but far inside 15 minutes).</li>
 </ul>
 </body></html>

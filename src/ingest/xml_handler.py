@@ -35,6 +35,25 @@ def parse_xml_entry(entry: FileEntry) -> None:
     )
 
 
+def inject_psn_xml(text: str, psn: str) -> str:
+    """Contract: a linked record carries its pseudonym. The patient's own id (inside patientRole) becomes the PSN;
+    failing that, the first redacted name does."""
+    root = DET.fromstring(text.encode("utf-8"))
+
+    def local(tag: object) -> str:
+        return str(tag).rsplit("}", 1)[-1].lower()
+    for role in (e for e in root.iter() if local(e.tag) in ("patientrole", "patient")):
+        for elem in role.iter():
+            if local(elem.tag) == "id" and "extension" in elem.attrib:
+                elem.attrib["extension"] = psn
+                return ET.tostring(root, encoding="unicode")
+    for elem in root.iter():
+        if elem.text and "[NAME]" in elem.text:
+            elem.text = elem.text.replace("[NAME]", psn, 1)
+            return ET.tostring(root, encoding="unicode")
+    return text
+
+
 def sanitize_xml_text(text: str, scrub_fn: Callable[[str], str]) -> str:
     root = DET.fromstring(text.encode("utf-8"))
     stack = [root]

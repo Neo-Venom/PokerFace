@@ -142,6 +142,10 @@ LABEL_STOP = {
     "unit", "round", "department", "dept", "section", "floor", "room", "opd", "icu", "casualty", "emergency",
     "medicine", "surgery", "obstetrics", "gynaecology", "paediatrics", "orthopaedics", "general", "block",
     "full", "fullname", "first", "last", "given", "family", "surname", "middle", "names", "code", "num", "number",
+    # address head nouns and admin words: labels and places, never a person's name
+    "mohalla", "nagar", "colony", "gali", "tola", "basti", "chowk", "peth", "wadi", "para", "gram", "gaon", "town",
+    "city", "locality", "area", "sector", "road", "marg", "lane", "street", "landmark", "post", "state", "zila", "jila",
+    "pincode", "postal", "residence", "abode", "hamlet", "subdiv", "panchayat",
 }
 FACILITY_WORDS = {
     "hospital", "hospitals", "trust", "clinic", "chikitsalaya", "sevashram", "mission", "diagnostics", "diagnostic",
