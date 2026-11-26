@@ -23,8 +23,21 @@ from raksha.detect.names_context import (
 from raksha.detect.normalize import build_normalized_view
 from raksha.detect.protected import build_clinical_lexicon, resolve_pii_vs_protected
 from raksha.detect.registry import build_alias_registry
-from raksha.detect.structured import infer_column_type, process_table_rows, sanitize_json_data
+from raksha.detect.structured import (
+    infer_column_type,
+    process_table_rows,
+    sanitize_header_or_key,
+    sanitize_json_data,
+)
 from raksha.export.filenames import sanitize_relative_path
+from raksha.identity.evidence import extract_all_evidences, get_json_record_units
+from raksha.identity.linker import resolve_clusters
+from raksha.identity.pseudonymizer import (
+    inject_psn_json_obj,
+    inject_psn_tabular_row,
+    inject_psn_text,
+    issue_cluster_pseudonyms,
+)
 from raksha.ingest.loader import SUPPORTED_EXTS, decode_bytes, load_json_safe, load_tabular, sniff_format
 from raksha.qa.leak_scanner import scan_and_remediate
 
@@ -74,7 +87,9 @@ def _process_tabular(
     rows: list[list[str]],
     delimiter: str,
     rel: str,
+    out_rel: str,
     records: list[dict],
+    record_to_psn: dict[tuple[str, str], str] | None = None,
     text_scrubber=None,
     stats: dict[str, int] | None = None,
 ) -> str:
@@ -83,49 +98,76 @@ def _process_tabular(
     writer = csv.writer(buf, delimiter=delimiter, lineterminator="\n")
     writer.writerow(clean_header)
     for i, row in enumerate(clean_body):
+        loc = f"row:{i}"
+        psn = record_to_psn.get((rel, loc)) if record_to_psn is not None else None
+        if psn is not None:
+            row = inject_psn_tabular_row(clean_header, row, psn)
         writer.writerow(row)
-        records.append({"file": f"sanitized/{rel}", "loc": f"row:{i}", "patient": None})
+        records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": psn})
     return buf.getvalue()
 
 
 def _process_json(
     data: object,
     rel: str,
+    out_rel: str,
     records: list[dict],
+    record_to_psn: dict[tuple[str, str], str] | None = None,
     text_scrubber=None,
     stats: dict[str, int] | None = None,
 ) -> str:
-    is_doc = (
-        not isinstance(data, dict)
-        or data.get("resourceType") == "Bundle"
-        or not any(
-            isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
-            for v in data.values()
-        )
-    )
-    if is_doc:
-        records.append({"file": f"sanitized/{rel}", "loc": "doc", "patient": None})
-    else:
-        for k, v in data.items():
-            if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
-                pointer_key = k.replace("~", "~0").replace("/", "~1")
-                for i in range(len(v)):
-                    records.append(
-                        {"file": f"sanitized/{rel}", "loc": f"/{pointer_key}/{i}", "patient": None}
-                    )
-
     cleaned = sanitize_json_data(data, text_scrubber=text_scrubber, stats=stats)
+    units = get_json_record_units(data)
+    if len(units) == 1 and units[0][0] == "doc":
+        psn = record_to_psn.get((rel, "doc")) if record_to_psn is not None else None
+        if psn is not None:
+            cleaned = inject_psn_json_obj(cleaned, psn)
+        records.append({"file": f"sanitized/{out_rel}", "loc": "doc", "patient": psn})
+    else:
+        key_to_cleaned: dict[str, str] = {}
+        if isinstance(data, dict) and isinstance(cleaned, dict):
+            for orig_k in data.keys():
+                if orig_k in cleaned:
+                    key_to_cleaned[orig_k] = orig_k
+                else:
+                    sk = sanitize_header_or_key(orig_k)
+                    if sk in cleaned:
+                        key_to_cleaned[orig_k] = sk
+
+        for loc, _sub in units:
+            psn = record_to_psn.get((rel, loc)) if record_to_psn is not None else None
+            if psn is not None and isinstance(cleaned, dict) and loc.startswith("/"):
+                parts = loc[1:].split("/", 1)
+                if len(parts) == 2:
+                    raw_pk, idx_s = parts
+                    orig_k = raw_pk.replace("~1", "/").replace("~0", "~")
+                    ck = key_to_cleaned.get(orig_k, orig_k)
+                    if isinstance(cleaned.get(ck), list):
+                        try:
+                            idx = int(idx_s)
+                            if 0 <= idx < len(cleaned[ck]):
+                                cleaned[ck][idx] = inject_psn_json_obj(cleaned[ck][idx], psn)
+                        except ValueError:
+                            pass
+            records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": psn})
+
     return json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n"
 
 
 def _process_text(
     text: str,
     rel: str,
+    out_rel: str,
     records: list[dict],
+    record_to_psn: dict[tuple[str, str], str] | None = None,
     text_scrubber=None,
 ) -> str:
-    records.append({"file": f"sanitized/{rel}", "loc": "doc", "patient": None})
-    return text_scrubber(text) if text_scrubber is not None else text
+    psn = record_to_psn.get((rel, "doc")) if record_to_psn is not None else None
+    records.append({"file": f"sanitized/{out_rel}", "loc": "doc", "patient": psn})
+    cleaned = text_scrubber(text) if text_scrubber is not None else text
+    if psn is not None:
+        cleaned = inject_psn_text(cleaned, psn)
+    return cleaned
 
 
 def run_pipeline(input_dir: Path, output_dir: Path) -> int:
@@ -182,6 +224,16 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
     alias_registry = build_alias_registry(parsed_items)
     crf_predictor = CRFPredictor()
 
+    # Link first, redact second: resolve patient clusters & issue >=80-bit HMAC pseudonyms
+    evidences = extract_all_evidences(parsed_items)
+    cluster_res = resolve_clusters(evidences)
+    cluster_to_psn = issue_cluster_pseudonyms(cluster_res.clusters, _psn_key)
+    record_to_psn: dict[tuple[str, str], str] = {
+        rec_key: cluster_to_psn[cid]
+        for rec_key, cid in cluster_res.record_to_cluster.items()
+        if cid in cluster_to_psn
+    }
+
     entity_stats: dict[str, int] = {}
 
     def scrub_free_text(txt: str) -> str:
@@ -219,11 +271,35 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
             )
             if fmt in ("csv", "tsv"):
                 delim = "\t" if fmt == "tsv" else ","
-                result = _process_tabular(payload, delim, out_rel, records, text_scrubber=scrub_free_text, stats=entity_stats)
+                result = _process_tabular(
+                    payload,
+                    delim,
+                    rel,
+                    out_rel,
+                    records,
+                    record_to_psn=record_to_psn,
+                    text_scrubber=scrub_free_text,
+                    stats=entity_stats,
+                )
             elif fmt == "json":
-                result = _process_json(payload, out_rel, records, text_scrubber=scrub_free_text, stats=entity_stats)
+                result = _process_json(
+                    payload,
+                    rel,
+                    out_rel,
+                    records,
+                    record_to_psn=record_to_psn,
+                    text_scrubber=scrub_free_text,
+                    stats=entity_stats,
+                )
             else:
-                result = _process_text(payload, out_rel, records, text_scrubber=scrub_free_text)
+                result = _process_text(
+                    payload,
+                    rel,
+                    out_rel,
+                    records,
+                    record_to_psn=record_to_psn,
+                    text_scrubber=scrub_free_text,
+                )
 
             dest = san_dir / out_rel
             dest.parent.mkdir(parents=True, exist_ok=True)

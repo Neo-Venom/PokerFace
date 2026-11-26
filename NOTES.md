@@ -105,10 +105,27 @@ Baseline starter (before M1 changes):
 - `eval_unseen.py`: Determinism `True` (A==B), Diff-secret `False` (expected in M1 before M2/M3 pseudonyms & date shifts), Quarantined `{'invalid_encoding': 1, 'malformed_json': 1, 'empty_file': 1, 'unsupported_format': 1}`, PII leaked **0 / 267 (0.0%)** across all types/scripts/channels, Canaries **0 / 3**, Medical values **13 / 13 (100.0%)**.
 - `truth_free_scan.py`: **0 survivors** on both `.unseen_data` and LF practice `dev/input`.
 
+---
 
+## Milestone M2: Patient Identity Resolution + Pseudonyms ("Link first, redact second")
 
-
-
-
+1. **Multi-script evidence extraction (`raksha/identity/evidence.py`)**:
+   - Extracts normalized + Latin-folded + phonetic name tokens, relatives (`S/o`, `D/o`, `W/o`, `C/O`, Hindi/English caretaker fields), DOB (per-column DD/MM vs MM/DD inference), age + record year, sex, villages/PINs, phones, Aadhaar (full & last4, guarding against matching trailing 12 digits of 14-digit ABHA numbers), ABHA numbers & addresses, PAN, email, insurance IDs, and hospital-scoped/prefixed MRNs (`(hospital, id)`).
+   - Uses iterative traversal (`get_json_record_units` + `_extract_dict_evidence`) so deeply nested exports never hit recursion limits.
+2. **Multi-channel name comparison (`raksha/identity/name_compare.py`)**:
+   - Evaluates exact normalized, cross-script transliteration/phonetic matching (with diphthong/romanization vowel folding), corroborated `Mohammad/Mohd/Md/Muhammad/मोहम्मद` alias matching (`Md.` rejected unless corroborated), initials, token-order permutations, `rapidfuzz` similarity, and strict single-token fragmentary name rules.
+3. **Blocking, Fellegi–Sunter scoring, and constrained clustering (`raksha/identity/linker.py`)**:
+   - 5-pass blocking union (strong IDs, transliterated/phonetic full names + initials, name+relative, name+overlapping age bucket, phone+name/phone candidates).
+   - Hand-calibrated Fellegi–Sunter weights with exclusive ID conflict vetoes, weak phone weight, DOB-to-age interval consistency, same-hospital vs cross-hospital generic UHID handling, and all-pairs cluster validation preventing transitive over-merging (`A~B, B~C, A!=C`).
+   - Stage A deterministic clustering (sorted by content hash and descending weight) + Stage B fragmentary note attachment requiring threshold and margin (otherwise `patient: null`).
+4. **Deterministic >=80-bit HMAC pseudonyms (`raksha/identity/pseudonymizer.py` & `raksha/pipeline.py`)**:
+   - Derives `PSN-<16 Crockford base32 chars>` (`80 bits`) from `HMAC-SHA256(key_pid, deterministic_cluster_fingerprint)` with explicit collision-detection nonce loop.
+   - Injects resolved `PSN-...` directly inside sanitized CSV/TSV cells, JSON records (iterative, skipping `_export_meta`), FHIR R4 `Patient` elements, and free-text documents without adding columns or breaking schemas; emits `records.jsonl` with exact `loc` (`null` when unlinked/ambiguous) and updates `counts.records_linked`.
+5. **Evaluation & Verification**:
+   - `pytest -v`: **27 / 27 passed** (includes cross-script `Md.`, homonyms, anti-transitive merge, fragmentary uniqueness/ambiguity, >=80-bit PSN entropy & forced collision avoidance, and end-to-end shuffle invariance).
+   - LF `validate_output.py`: **`CONTRACT OK`** (`files 200 sanitized 194 quarantined 6 records 823`).
+   - LF `check_dev.py`: **0 / 3230 (0.0%)** PII leaked across all scripts/channels, **0 / 4** canaries, **4855 / 4855 (100.0%)** medical values kept, **Patient Linking precision 1.00, recall 1.00, F0.5 1.00, 0 wrong merges**.
+   - `tools/eval_linkage.py` against `dev/truth/truth.json`: **771 / 771** linkable units across **48 / 48** true clusters, **Pairwise P/R/F0.5 = 1.0000 / 1.0000 / 1.0000**, **B-cubed P/R/F1 = 1.0000 / 1.0000 / 1.0000**, **Wrong merges = 0**, **PSN in-record consistency = 776 / 776 (100.0%)**.
+   - `tools/robustness/`: **0 / 267 (0.0%)** unseen PII leaked, **0 / 3** canaries, **13 / 13 (100.0%)** medical values kept, **Determinism = True**, **Different-secret diff = True**, **0** truth-free survivors on both practice LF and unseen inputs.
 
 
