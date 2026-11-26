@@ -14,6 +14,7 @@ from data.gazetteers import (
     HONORIFICS_BEFORE,
     KNOWN_GEO_DISTRICTS_STATES,
 )
+from data.clinical_vocab import CLINICAL_ABBREVIATIONS, NON_NAME_TITLE_WORDS, ROLE_WORDS
 from src.models import FileEntry, Span
 from src.nlp.indic_norm import GENERIC_WEAK_TOKENS, deobfuscate_unicode, detect_script, name_tokens, normalize_name_token, romanize_token, shadow_normalize, unquote_percent_text
 from src.nlp.medical_guard import MedicalGuard
@@ -33,9 +34,11 @@ _LABEL_CUT_RE = re.compile(
 
 _REL_PAT_RE = re.compile(
     r"(?i)(?:\b(?:S/o|D/o|W/o|son[ \t]+of|daughter[ \t]+of|wife[ \t]+of)[ \t]*[:\-]?[ \t]*"
-    r"|\b(?:attendant|guardian|caregiver)[ \t]*[:\-][ \t]*"
+    r"|\b(?:attendant|guardian|caregiver|care[ \t]*taker|informant|bystander|escort|visitor|nominee|caller|sender"
+    r"|receiver|recipient|applicant|claimant|witness|next[ \t]+of[ \t]+kin|emergency[ \t]+contact|contact[ \t]+person)"
+    r"(?:[ \t]+name)?[ \t]*[:\-][ \t]*"
     r"|पिता[ \t]+का[ \t]+नाम[ \t]*[:\-]?[ \t]*|पति[ \t]+का[ \t]+नाम[ \t]*[:\-]?[ \t]*|पुत्र[ \t]+|पुत्री[ \t]+|पत्नी[ \t]+)"
-    r"([A-Z\u0900-\u097f][A-Za-z\u0900-\u097f. \t]{1,45}?)(?=,|\n|;|\)|\.?[ \t]*(?:mob|phone|age|h\.?no|house|makan|ward|mohalla|near|vill|gram|tehsil|dist|informed|\d)|$)"
+    r"([A-Z\u0900-\u097f][A-Za-z\u0900-\u097f.'\u2019\- \t]{1,45}?)(?=,|\n|;|\)|\(|\.?[ \t]*(?:mob|phone|age|h\.?no|house|makan|ward|mohalla|near|vill|gram|tehsil|dist|informed|\d)|$)"
 )
 
 _BEFORE_REL_RE = re.compile(
@@ -49,7 +52,10 @@ _CO_REL_RE = re.compile(
 
 _HONORIFIC_AFTER_RE = re.compile(
     r"(?i)\b([A-Za-z\u0900-\u097f]{2,25}(?:[ \t]+[A-Za-z\u0900-\u097f]{2,25}){0,1})[ \t]+"
-    r"(?:ji|sahab|saab|sahib|didi|behenji|bhai|bhaiya|babu|amma|papa|chacha|chachu|garu|anna|akka|जी|साहब|दीदी)\b"
+    r"(?:ji|jee|sahab|saab|sahib|saheb|didi|behenji|bahenji|bhai|bhaiya|babu|amma|ammi|papa|chacha|chachu|chachi|garu|anna"
+    r"|akka|uncle|aunty|auntie|aunti|mausi|masi|mami|nani|dadi|bua|tai|tau|kaka|kaki|appa|thambi|chechi|chetta|chettan"
+    r"|ettan|boudi|mashi|bhau|bhabhi|bhabi|begum|miyan|mian"
+    r"|जी|साहब|साहेब|दीदी|बहनजी|भैया|भाई|बाबू|अम्मा|चाचा|चाची|मौसी|मामी|दादी|नानी|आंटी|अंकल|भाभी)(?![\wऀ-ॿ])"
 )
 
 # Mixed-script names ("लखन Lepcha", "Rajesh कुमार") are tried first, then Latin title-case names.
@@ -59,8 +65,8 @@ _TITLE_TOKS = (r"(?:" + _MIXED_TOKS + r"|(?:(?:Md|Mohd|Mohammad)\.?[ \t]+)?[A-Z]
 _DEVA_TOKS = r"[\u0900-\u097f]{2,20}(?:[ \t]+[\u0900-\u097f]{2,20}){0,2}"
 
 _HONORIFIC_BEFORE_RE = re.compile(
-    r"\b(?i:Shri|Sri|Smt\.?|Km\.?|Kumari|Mr\.?|Mrs\.?|Ms\.?|Master|Pt\.?|Patient|Late|Baby[ \t]+of|B/o)[ \t]+"
-    r"(" + _TITLE_TOKS + r")"
+    r"\b(?i:Shri|Sri|Smt\.?|Km\.?|Kumari|Mr\.?|Mrs\.?|Ms\.?|Master|Pt\.?|Patient|Late|Baby[ \t]+of|B/o|Mareez|Mariz|Marij|Rogi)[ \t]+"
+    r"((?:[A-Z]\.[ \t]*){0,3}" + _TITLE_TOKS + r")"
     r"|(?:श्री|श्रीमती|कुमारी|स्व\.)[ \t]*(" + _DEVA_TOKS + r")"
 )
 
@@ -68,23 +74,52 @@ _HONORIFIC_BEFORE_RE = re.compile(
 _AGE_ANCHOR_NAME_RE = re.compile(
     r"(" + _TITLE_TOKS + r")[ \t]*(?:\([ \t]*(?:aged?[ \t]*)?\d{1,3}[ \t]*(?:Y|y|yrs?|years?)?[ \t]*/?[ \t]*(?:[MFmf]\b)?[ \t]*\)"
     r"|,[ \t]*\d{1,3}[ \t]*(?:yrs?|years?|Y)\b|,[ \t]*(?:a[ \t]+)?\d{1,3}-year-old"
-    r"|[ \t]+\d{1,3}[ \t]*(?:Y|y|yrs?|years?)?[ \t]*/[ \t]*[MFmf]\b)"
+    r"|[ \t]+\d{1,3}[ \t]*(?:Y|y|yrs?|years?)?[ \t]*/[ \t]*[MFmf]\b|,?[ \t]+[MF][ \t]*/[ \t]*\d{1,3}\b)"
 )
+# "RAMACHANDRAN K, 58/M", "SUBRAMANIAM, Kalyani  F/62", "MANJUNATH GOWDA M/45"
+_CAPS_AGE_NAME_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Z]{3,20}(?:[ \t]+[A-Z]{1,20}\.?){0,2}(?:,[ \t]*[A-Z][a-z]{2,20})?)[ \t]*,?[ \t]*"
+    r"(?:\(?\d{1,3}[ \t]*(?:Y|YRS?|yrs?)?[ \t]*/[ \t]*[MFmf]\b|\(?[MF][ \t]*/[ \t]*\d{1,3}\b)"
+)
+# Hinglish frames around a bare name: "Anbarasi se baat hui", "Sreeja ki mummy", "Jeevanandham aur unki wife",
+# "Pt ka naam Kannan hai", "this is Arokiaraj from Bed 9"
+_HINGLISH_FRAME_RE = re.compile(
+    r"\b([A-Z][a-z]{2,20}(?:[ \t]+[A-Z][a-z]{2,20})?)[ \t]+(?:(?i:ji|jee)[ \t]+)?"
+    r"(?i:se[ \t]+(?:baat|mil|pooch|puch)|ne[ \t]+(?:bola|boli|bataya|batayi|kaha|kahi|call|phone|fone|sign|pay|form|consent)"
+    r"|aur[ \t]+(?:unki|unke|unka|uski|uske|uska)|ki[ \t]+(?:mummy|mother|maa|mata|wife|beti|behen|bahen|bahu|saas|nani|dadi)"
+    r"|ke[ \t]+(?:papa|father|pita|pati|husband|bete|beta|bhai|bhaiya|sasur|chacha|mama|nana|dada|ghar|gharwale)"
+    r"|ka[ \t]+(?:beta|bhai|pati|ghar|phone|fone|number|mobile))\b"
+    r"|\b(?i:naam|name[ \t]+is|named|this[ \t]+is|myself|my[ \t]+name[ \t]+is)[ \t]+([A-Z][a-z]{2,20}(?:[ \t]+[A-Z][a-z]{2,20})?)"
+)
+_DEVA_FRAME_RE = re.compile(
+    r"(?<![\u0900-\u097f])([\u0900-\u097f]{3,20})[ \t]+(?:जी[ \t]+)?"
+    r"(?:ने[ \t]+(?:बताया|कहा|बोला|बोली|फोन|फ़ोन)|से[ \t]+बात|की[ \t]+(?:माँ|मां|मम्मी|पत्नी|बेटी|बहन)|के[ \t]+(?:पिता|पापा|पति|बेटे|भाई))"
+)
+_DEVA_NON_NAME = {
+    "डॉक्टर", "डॉ", "डाक्टर", "मरीज", "मरीज़", "रोगी", "नर्स", "सिस्टर", "स्टाफ", "परिजन", "परिवार", "पति", "पत्नी", "बेटे",
+    "बेटा", "बेटी", "माँ", "मां", "पिता", "भाई", "बहन", "उन्होंने", "उसने", "इन्होंने", "मैंने", "हमने", "सबने", "किसी", "कोई",
+    "घरवालों", "लोगों", "आशा", "एएनएम", "डॉक्टरों", "नर्सों", "उन", "उस", "इस", "जिस", "सभी", "दोनों", "पड़ोसी", "मालिक",
+    "ड्राइवर", "गार्ड", "कर्मचारी", "अस्पताल", "विभाग", "रिसेप्शन", "काउंटर", "हेल्पडेस्क",
+}
 
 # Relation noun + name: "brought by son Arivazhagan", "unke pati Zothanmawia ne", "Attendant Venkatesh Murmu"
+# (the trailing \b keeps "pati" from firing inside "IN-PATIENT" and "son" inside "SONOGRAPHY")
 _REL_NOUN_RE = re.compile(
     r"\b(?i:son|daughter|husband|wife|brother|sister|mother|father|nephew|niece|grandson|granddaughter|uncle|aunt"
-    r"|beta|beti|pati|patni|bhai|behen|bhabhi|devar|sasur|saas|chacha|mama|attendant|relative|guardian|caretaker|nok|kin)"
+    r"|beta|beti|bete|pati|patni|bhai|behen|bahen|bhabhi|devar|sasur|saas|chacha|mama|bahu|damad|jija"
+    r"|attendant|relative|guardian|caretaker|nok|kin)\b"
     r"(?:[ \t]+(?i:of|named|is))?[ \t]*[:\-]?[ \t]*(" + _TITLE_TOKS + r")"
-    r"|(?:पिता|पति|पत्नी|पुत्र|पुत्री|बेटा|बेटी|माता|भाई|बहन|अभिभावक|परिजन)[ \t]*[:\-]?[ \t]*(" + _DEVA_TOKS + r")"
+    r"|(?:पिता|पति|पत्नी|पुत्र|पुत्री|बेटा|बेटी|बेटे|बहू|दामाद|पोता|पोती|भतीजा|भांजा|माता|भाई|बहन|भाभी|देवर|ससुर|सास"
+    r"|अभिभावक|परिजन)(?![ऀ-ॿ])[ \t]*[:\-]?[ \t]*(" + _DEVA_TOKS + r")"
 )
 
 # "Bed 7: Kezhokhoto Sema", "Bed 12 pe Ravi Kumar"
 _BED_NAME_RE = re.compile(r"\b(?i:bed)(?:[ \t]*(?i:no)\.?)?[ \t]*\d{1,3}[ \t]*(?:[:\-–]|(?i:pe|par|par\b))[ \t]*(" + _TITLE_TOKS + r")")
 
-# "a 97-year-old man from Hirakhera Chhota" -> village
+# "a 97-year-old man from Hirakhera Chhota" -> village (an age number must precede: "Yr of Birth" is a label)
 _FROM_PLACE_RE = re.compile(
-    r"(?i:year[- ]old|yrs?|aged[ \t]+\d{1,3})[ \t]+(?i:man|woman|male|female|boy|girl|patient|lady|gentleman)?[ \t]*(?i:from|of)[ \t]+"
+    r"(?:\d{1,3}[ \t-]*(?i:year[- ]old|yrs?|years?)\b|(?i:aged)[ \t]+\d{1,3}(?:[ \t]*(?i:yrs?|years?))?)[ \t]+"
+    r"(?i:(?:man|woman|male|female|boy|girl|patient|lady|gentleman)[ \t]+)?(?i:from|of)[ \t]+"
     r"([A-Z][a-zA-Z]{2,24}(?:[ \t]+[A-Z][a-zA-Z]{2,24}){0,2})"
 )
 
@@ -98,7 +133,10 @@ _POSTPOS_NAME_RE = re.compile(
 _PERSON_VERB_RE = re.compile(
     r"(?:\b(?i:called[ \t]+by|witnessed[ \t]+by|raised[ \t]+by|accompanied[ \t]+by|informed[ \t]+by|brought[ \t]+by|sample[ \t]+received[ \t]+from"
     r"|signed[ \t]+by|consent(?:ed)?[ \t]+by|given[ \t]+by|issued[ \t]+to|handed[ \t]+over[ \t]+to|picked[ \t]+up|dropped[ \t]+off|received[ \t]+from"
-    r"|visited[ \t]+by|enquiry[ \t]+(?:by|from)|complaint[ \t]+(?:by|from)|spoke[ \t]+(?:to|with)|refund[ \t]+to|registered[ \t]+by)|'s[ \t]+attendant)[ \t]*"
+    r"|visited[ \t]+by|enquiry[ \t]+(?:by|from)|complaint[ \t]+(?:by|from)|spoke[ \t]+(?:to|with)|refund[ \t]+to|registered[ \t]+by"
+    r"|relieved[ \t]+by|escorted[ \t]+by|collected[ \t]+by|received[ \t]+by|paid[ \t]+by|deposited[ \t]+by|submitted[ \t]+by"
+    r"|requested[ \t]+by|pass[ \t]+issued[ \t]+to|security[ \t]+guard|ward[ \t]*boy|watchman|driver|sweeper)|'s[ \t]+attendant)"
+    r"[ \t]*[:\-]?[ \t]*"
     r"(" + _TITLE_TOKS + r")"
 )
 
@@ -117,8 +155,10 @@ _PRIORITY = {
     "AADHAAR_MASKED": 96,
     "AADHAAR": 95,
     "PHONE": 94,
+    "PHONE_MASKED": 93,
     "INSURANCE_ID": 93,
     "MRN": 92,
+    "GOV_ID": 91,
     "DOB": 90,
     "PIN": 85,
     "HOUSE": 80,
@@ -146,12 +186,19 @@ LABEL_STOP = {
     "mohalla", "nagar", "colony", "gali", "tola", "basti", "chowk", "peth", "wadi", "para", "gram", "gaon", "town",
     "city", "locality", "area", "sector", "road", "marg", "lane", "street", "landmark", "post", "state", "zila", "jila",
     "pincode", "postal", "residence", "abode", "hamlet", "subdiv", "panchayat",
+    # document / form words ("IN-PATIENT DISCHARGE RECORD", "Patient Registration Form")
+    "discharge", "admission", "record", "records", "slip", "form", "sheet", "register", "registration", "details",
+    "information", "info", "copy", "file", "card", "list", "chart", "log", "entry",
 }
 FACILITY_WORDS = {
     "hospital", "hospitals", "trust", "clinic", "chikitsalaya", "sevashram", "mission", "diagnostics", "diagnostic",
     "pathology", "lab", "labs", "laboratory", "nursing", "college", "centre", "center", "institute", "foundation",
     "dispensary", "phc", "chc", "sadan", "ashram", "pharmacy", "medicals", "अस्पताल", "चिकित्सालय",
 }
+
+
+# "ASHA", "ANM", "AWW" written in capitals are roles; "Asha" in title case stays a possible given name
+_CAPS_ROLE_ACRONYMS = frozenset(CLINICAL_ABBREVIATIONS | {"asha"})
 
 
 def _is_hospital_fragment(joined_low: str, guard: MedicalGuard) -> bool:
@@ -175,6 +222,8 @@ def _is_valid_name_candidate(raw: str, guard: MedicalGuard) -> bool:
         if lt in HINGLISH_STOPWORDS or guard.is_clinical_word(t):
             continue
         if lt in KNOWN_GEO_DISTRICTS_STATES:
+            continue
+        if lt in ROLE_WORDS or lt in NON_NAME_TITLE_WORDS or (t.isupper() and t.lower() in _CAPS_ROLE_ACRONYMS):
             continue
         if len(t) >= 2:
             meaningful.append(t)
@@ -254,7 +303,8 @@ def extract_context_name_spans(text: str, guard: MedicalGuard, anchor_spans: lis
         cand = m.group(1)
         # Filter leading stopwords like "Report of Asha" -> keep Asha
         parts = cand.split()
-        while parts and (parts[0].lower() in HINGLISH_STOPWORDS or guard.is_clinical_word(parts[0])):
+        while parts and (parts[0].lower() in HINGLISH_STOPWORDS or guard.is_clinical_word(parts[0])
+                         or (parts[0].isupper() and parts[0].lower() in _CAPS_ROLE_ACRONYMS)):
             offset = len(parts[0]) + 1
             parts.pop(0)
             cand = cand[offset:]
@@ -268,6 +318,26 @@ def extract_context_name_spans(text: str, guard: MedicalGuard, anchor_spans: lis
 
     for m in _AGE_ANCHOR_NAME_RE.finditer(text):
         _add(m.start(1), m.end(1), "PATIENT_NAME")
+
+    for m in _CAPS_AGE_NAME_RE.finditer(text):
+        _add(m.start(1), m.end(1), "PATIENT_NAME")
+
+    for m in _HINGLISH_FRAME_RE.finditer(text):
+        g = 1 if m.group(1) else 2
+        st, en = m.start(g), m.end(g)
+        toks = text[st:en].split()
+        # a sentence-initial function word is not part of the name ("Kal Sukanya se baat hui")
+        while toks and (toks[0].lower() in HINGLISH_STOPWORDS or toks[0].lower() in ROLE_WORDS):
+            st = text.find(toks[1], st) if len(toks) > 1 else en
+            toks = toks[1:]
+        if toks:
+            _add(st, en, "PATIENT_NAME")
+
+    if "ने" in text or "से" in text or "की" in text or "के" in text:
+        for m in _DEVA_FRAME_RE.finditer(text):
+            w = m.group(1)
+            if w not in _DEVA_NON_NAME and w not in _DEVA_STOP and w not in HINGLISH_STOPWORDS and not guard.is_clinical_word(w):
+                _add(m.start(1), m.end(1), "PATIENT_NAME")
 
     for m in _BED_NAME_RE.finditer(text):
         _add(m.start(1), m.end(1), "PATIENT_NAME")
@@ -565,7 +635,7 @@ def _resolve_chunk(
             repl = "[NAME]"
         elif sp.kind == "RELATIVE_NAME":
             repl = "[RELATIVE]"
-        elif sp.kind == "PHONE":
+        elif sp.kind in ("PHONE", "PHONE_MASKED"):
             repl = "[PHONE]"
         elif sp.kind == "EMAIL":
             repl = "[EMAIL]"

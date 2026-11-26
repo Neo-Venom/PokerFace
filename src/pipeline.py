@@ -140,7 +140,7 @@ def _harvest_text_spans(text: str, guard: MedicalGuard, harvester: PiiHarvester)
             if sp.kind in ("PATIENT_NAME", "RELATIVE_NAME"):
                 if not guard.is_protected_span(sp.start, sp.end, prot, strict=True):
                     harvester.add_name(sp.text)
-            elif sp.kind in ("MRN", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "INSURANCE_ID"):
+            elif sp.kind in ("MRN", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "INSURANCE_ID", "GOV_ID"):
                 in_doc_or_med = any(
                     (tag == "DOCTOR" and ps < sp.end and pe > sp.start) or (tag == "MEDICAL" and ps <= sp.start and sp.end <= pe)
                     for ps, pe, tag in prot

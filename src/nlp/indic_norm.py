@@ -48,7 +48,10 @@ def unquote_percent_text(text: str) -> str:
         lambda m: bytes.fromhex(m.group(0).replace("%", "")).decode("utf-8", errors="replace"),
         text,
     )
-_DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+# Every Indic script's digits (Devanagari, Bengali/Assamese, Gurmukhi, Gujarati, Odia, Tamil, Telugu, Kannada,
+# Malayalam), Arabic-Indic / Urdu digits and fullwidth digits -> ASCII (1:1, so offsets stay aligned).
+_DIGIT_ZEROS = (0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0660, 0x06F0, 0xFF10)
+_DEVA_DIGITS = {z + i: 48 + i for z in _DIGIT_ZEROS for i in range(10)}
 _HOMOGLYPHS = str.maketrans({
     "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T", "Х": "X",
     "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "х": "x", "у": "y", "і": "i",
