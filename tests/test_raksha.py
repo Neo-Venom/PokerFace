@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -141,7 +142,10 @@ class TestRakshaCore(unittest.TestCase):
 
             wa = (out / "sanitized" / "whatsapp_forward_0001.txt").read_text(encoding="utf-8")
             self.assertNotIn(" 48 ", wa)
-            self.assertIn("40-59 Y / F", wa)
+            # A lone patient can never be k-anonymous: the band widens, but must stay truthful (48 inside it)
+            m_band = re.search(r"(\d+)-(\d+) Y / F", wa)
+            self.assertIsNotNone(m_band, wa)
+            self.assertTrue(int(m_band.group(1)) <= 48 <= int(m_band.group(2)), wa)
 
             idx_out = json.loads((out / "sanitized" / "patient_index.json").read_text(encoding="utf-8"))
             uhid_keys = list(idx_out["by_uhid"].keys())

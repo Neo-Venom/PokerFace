@@ -12,7 +12,7 @@ from src.config import Policy
 from src.ingest.profiler import infer_role_from_header, resolve_key_role
 from src.linkage.evidence import RecordEvidence
 from src.models import FileEntry
-from src.nlp.indic_norm import normalize_name_token, shadow_normalize
+from src.nlp.indic_norm import normalize_name_token, phonetic_skeleton, shadow_normalize
 from src.nlp.medical_guard import MedicalGuard
 from src.security.keys import KeyRing
 
@@ -56,6 +56,212 @@ def format_age_band(age_min: int, age_max: int, width: int = 5, top_code: int = 
     if hi_b >= top_code:
         return f"{lo_b}+"
     return f"{lo_b}-{hi_b}"
+
+
+# Coarse life-stage partitions used once 20-year bands still leave a patient in a group smaller than k.
+# Minors keep a <=20-year band ("0-17") at every level; open-ended "N+" bands follow the "85+" convention.
+_LIFE_STAGES: tuple[tuple[tuple[int, int | None], ...], ...] = (
+    ((0, 17), (18, 59), (60, None)),
+    ((0, 17), (18, None)),
+)
+_OPEN_HI = 200
+_CLOSED_TOP = 120  # upper bound written for adult-wide bands (ages are capped at 115 everywhere)
+
+
+def _stage_band(lo: int, hi: int, stages: tuple[tuple[int, int | None], ...]) -> str:
+    def _stage_of(age: int) -> tuple[int, int | None]:
+        for s_lo, s_hi in stages:
+            if s_hi is None or age <= s_hi:
+                if age >= s_lo:
+                    return s_lo, s_hi
+        return stages[-1]
+
+    a = _stage_of(lo)[0]
+    b = _stage_of(hi)[1]
+    if b is None:
+        # "60+" reads as an elderly band everywhere; an adult-wide open band is written closed ("18-120") because
+        # age parsers read "Age: 18+" as the exact age 18, which would single out 18-20 year olds.
+        return f"{a}+" if a >= 60 else f"{a}-{_CLOSED_TOP}"
+    return f"{a}-{b}"
+
+
+def age_band_ladder(age_min: int, age_max: int, base_width: int = 5, top_code: int = 85) -> list[str]:
+    """Truthful bands for [age_min, age_max] from most to least specific (duplicates removed).
+
+    5y -> 10y -> 20y (format_age_band, straddler aware) -> life stage (0-17 / 18-59 / 60+) -> (0-17 / 18+).
+    Every band contains every age in [age_min, age_max]."""
+    lo, hi = max(0, min(age_min, age_max)), max(0, max(age_min, age_max))
+    bands = [
+        format_age_band(lo, hi, width=base_width, top_code=top_code),
+        format_age_band(lo, hi, width=10, top_code=min(80, top_code)),
+        format_age_band(lo, hi, width=20, top_code=min(80, top_code)),
+    ]
+    bands.extend(_stage_band(lo, hi, st) for st in _LIFE_STAGES)
+    out: list[str] = []
+    for b in bands:
+        if b not in out:
+            out.append(b)
+    return out
+
+
+def band_bounds(band: str) -> tuple[int, int]:
+    """(lo, hi) of an age band string ("45-49", "85+"); open bands end at a sentinel age."""
+    m = re.match(r"^(\d+)\+$", band)
+    if m:
+        return int(m.group(1)), _OPEN_HI
+    m = re.match(r"^(\d+)-(\d+)$", band)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return 0, _OPEN_HI
+
+
+_ICD_RE = re.compile(r"^[A-Z]\d{2}(?:\.\d{1,4})?$", re.I)
+# "x 5 days", "7 din se", "since 2 weeks", "3 saal": a free-text duration, not part of a condition name
+_DURATION_RE = re.compile(
+    r"(?i)\d+\s*(?:days?|din|dino|d|weeks?|wks?|hafte?|months?|mahine?|mo|yrs?|years?|saal|sal|hrs?|hours?|ghante?)\b"
+    r"|\bx\s*\d|\bsince\b|\bse\b"
+)
+
+
+def condition_keys(diagnoses: set[str] | list[str]) -> set[str]:
+    """Diagnosis strings that name a condition (ICD-10 codes or condition names), not complaint durations.
+
+    Complaints such as "c/o fever x 5 days" or "7 din se bukhar" carry free-text durations that make every
+    string look unique; they are not sensitive attributes and would make every patient look rare."""
+    out: set[str] = set()
+    for d in diagnoses:
+        s = " ".join(str(d).strip().lower().split())
+        if not s or len(s) > 90:
+            continue
+        if _ICD_RE.match(s):
+            out.add(s.upper())
+            continue
+        if _DURATION_RE.search(s) or re.match(r"(?:c/o|h/o|k/c/o|complain)", s):
+            continue
+        if len(s) >= 4 and re.search(r"[a-zऀ-ॿ]{3}", s):
+            out.add(s)
+    return out
+
+
+@dataclass
+class _ClusterQI:
+    key: str
+    gender: str                      # "M" | "F" | "?"
+    bounds: tuple[int, int] | None   # pooled (min, max) true age
+    district: str                    # canonical district key ("" = unknown)
+    pin3: str
+    conditions: frozenset[str]
+
+
+class _AnonIndex:
+    """Counts distinct patient clusters consistent with a generalised quasi-identifier tuple.
+
+    A cluster is consistent with (gender, district, [pin3,] band) when its gender is compatible (unknown gender is
+    compatible with both), it lives in that district (an unknown district is matched against every district) and
+    its pooled true age range overlaps the band. Counting uses per-group sorted bounds and bisection: O(log n)."""
+
+    def __init__(self, qis: list[_ClusterQI]) -> None:
+        from bisect import bisect_left, bisect_right
+
+        self._bl, self._br = bisect_left, bisect_right
+        groups: dict[tuple[str, str, str], list[tuple[int, int]]] = defaultdict(list)
+        members: dict[tuple[str, str], list[_ClusterQI]] = defaultdict(list)
+        for q in qis:
+            if q.bounds is None:
+                continue
+            for dkey in ({q.district, "*"} if q.district else {"*"}):
+                groups[(dkey, "", q.gender)].append(q.bounds)
+                if q.pin3:
+                    groups[(dkey, q.pin3, q.gender)].append(q.bounds)
+                members[(dkey, q.gender)].append(q)
+        self._los = {k: sorted(b[0] for b in v) for k, v in groups.items()}
+        self._his = {k: sorted(b[1] for b in v) for k, v in groups.items()}
+        self._members = {k: sorted(v, key=lambda q: (q.bounds or (0, 0), q.key)) for k, v in members.items()}
+
+    @staticmethod
+    def _genders(g: str) -> tuple[str, ...]:
+        return (g, "?") if g in ("M", "F") else ("M", "F", "?")
+
+    def count(self, q: _ClusterQI, band: str, use_pin3: bool = False) -> int:
+        blo, bhi = band_bounds(band)
+        dkey = q.district or "*"
+        pkey = q.pin3 if use_pin3 else ""
+        n = 0
+        for g in self._genders(q.gender):
+            k = (dkey, pkey, g)
+            los = self._los.get(k)
+            if not los:
+                continue
+            n += self._br(los, bhi) - self._bl(self._his[k], blo)
+        return n
+
+    def distinct_conditions(self, q: _ClusterQI, band: str, primary: dict[str, str], need: int) -> int:
+        """Distinct primary conditions among consistent clusters (stops early once `need` is reached)."""
+        blo, bhi = band_bounds(band)
+        dkey = q.district or "*"
+        seen: set[str] = set()
+        for g in self._genders(q.gender):
+            for m in self._members.get((dkey, g), []):
+                assert m.bounds is not None
+                if m.bounds[0] > bhi:
+                    break
+                if m.bounds[1] >= blo and m.key in primary:
+                    seen.add(primary[m.key])
+                    if len(seen) >= need:
+                        return len(seen)
+        return len(seen)
+
+
+def _canon_district(token: str) -> str:
+    return phonetic_skeleton(token) or token
+
+
+def plan_quasi_identifiers(qis: list[_ClusterQI], policy: Policy) -> tuple[dict[str, str], dict[str, bool], dict[str, int]]:
+    """Choose, per patient cluster, the most specific age band whose equivalence class is k-anonymous.
+
+    Returns (band per cluster, keep-PIN-prefix per cluster, ladder level per cluster).
+
+    * k-anonymity is measured over DISTINCT patient clusters (never rows) that are consistent with the released
+      (gender, district, band) - see _AnonIndex - so a patient with 40 visits still counts once.
+    * Patients carrying a rare condition (seen in fewer than rare_dx_min_patients clusters) are the targets of the
+      known-facts attack: the condition finds their profile, so only the registry anonymity of the remaining
+      quasi-identifiers protects them; they need 2k.
+    * l-diversity: an equivalence class with diagnoses must show at least l distinct primary conditions, otherwise
+      membership alone discloses the condition (homogeneity attack).
+    * The 3-digit PIN prefix is released only when the class stays k-anonymous with it.
+    """
+    k = max(2, int(policy.min_group_size))
+    l_div = max(1, int(policy.l_diversity))
+    rare_n = max(1, int(policy.rare_dx_min_patients))
+    cond_freq: Counter[str] = Counter()
+    for q in qis:
+        cond_freq.update(q.conditions)
+    primary: dict[str, str] = {}
+    for q in qis:
+        if q.conditions:
+            primary[q.key] = min(q.conditions, key=lambda c: (cond_freq[c], c))
+    index = _AnonIndex(qis)
+    bands: dict[str, str] = {}
+    keep_pin: dict[str, bool] = {}
+    levels: dict[str, int] = {}
+    for q in sorted(qis, key=lambda x: x.key):
+        if q.bounds is None:
+            continue
+        rare = bool(q.conditions) and cond_freq[primary[q.key]] < rare_n
+        need = 2 * k if rare else k
+        ladder = age_band_ladder(q.bounds[0], q.bounds[1], base_width=policy.age_band_years, top_code=policy.age_top_code)
+        chosen, lvl = ladder[-1], len(ladder) - 1
+        for i, band in enumerate(ladder):
+            if index.count(q, band) < need:
+                continue
+            if l_div > 1 and q.key in primary and index.distinct_conditions(q, band, primary, l_div) < l_div:
+                continue
+            chosen, lvl = band, i
+            break
+        bands[q.key] = chosen
+        levels[q.key] = lvl
+        keep_pin[q.key] = bool(q.pin3) and index.count(q, chosen, use_pin3=True) >= need
+    return bands, keep_pin, levels
 
 
 @dataclass
@@ -174,6 +380,7 @@ def build_privacy_plan(
     c_teh: dict[str, str] = {}
     c_pin3: dict[str, str] = {}
     c_anchor: dict[str, int] = {}
+    c_conditions: dict[str, frozenset[str]] = {}
 
     # Collect DOBs across all records in each file so shifted clinical dates never collide with any DOB in that file
     file_dobs: dict[str, set[dt.date]] = defaultdict(set)
@@ -203,74 +410,42 @@ def build_privacy_plan(
 
         genders = [e.gender for e in grp if e.gender]
         c_gender[ckey] = Counter(genders).most_common(1)[0][0] if genders else "?"
-        dists = sorted({d for e in grp for d in e.districts if d})
-        c_dist[ckey] = dists[0] if dists else "?"
+        # Majority district over the cluster's records (a hospital's own town mentioned once must not win)
+        dist_votes = Counter(_canon_district(d) for e in grp for d in e.districts if d)
+        c_dist[ckey] = min(dist_votes, key=lambda d: (-dist_votes[d], d)) if dist_votes else ""
         tehs = sorted({t for e in grp for t in rec_tehsils.get(e.uid, set()) if t})
         c_teh[ckey] = tehs[0] if tehs else ""
-        pins = sorted({p[:3] for e in grp for p in e.pins if len(p) == 6})
-        c_pin3[ckey] = pins[0] if pins else ""
+        pin_votes = Counter(p[:3] for e in grp for p in e.pins if len(p) == 6)
+        c_pin3[ckey] = min(pin_votes, key=lambda p: (-pin_votes[p], p)) if pin_votes else ""
+        c_conditions[ckey] = frozenset(condition_keys({d for e in grp for d in e.diagnoses}))
 
         for e in grp:
             plan.rec_shift_days[e.uid] = shift
             plan.rec_anchor_year[e.uid] = anchor
 
-    # Adaptive k-anonymity on age_band: widen 5 -> 10 -> 15 -> 20 yrs per (gender, district) if eq_class < k
-    k_target = max(2, policy.min_group_size)
-    c_band: dict[str, str] = {}
-    for ckey, bounds in c_age_bounds.items():
-        if bounds is None:
-            continue
-        c_band[ckey] = format_age_band(bounds[0], bounds[1], width=policy.age_band_years, top_code=policy.age_top_code)
+    # Joint k-anonymity / l-diversity over distinct patient clusters (see plan_quasi_identifiers)
+    qis = [
+        _ClusterQI(ckey, c_gender[ckey] if c_gender[ckey] in ("M", "F") else "?", c_age_bounds[ckey],
+                   c_dist[ckey], c_pin3[ckey], c_conditions[ckey])
+        for ckey in sorted(clusters)
+    ]
+    c_band, c_keep_pin, _levels = plan_quasi_identifiers(qis, policy)
 
-    for width in (10, 15, 20):
-        eq_counts = Counter((c_gender[c], c_dist[c], c_band[c]) for c in c_band)
-        changed = False
-        for ckey, band in list(c_band.items()):
-            if eq_counts[(c_gender[ckey], c_dist[ckey], band)] < k_target:
-                bounds = c_age_bounds[ckey]
-                assert bounds is not None
-                new_band = format_age_band(bounds[0], bounds[1], width=width, top_code=min(80, policy.age_top_code))
-                if new_band != band:
-                    c_band[ckey] = new_band
-                    changed = True
-        if not changed:
-            break
-
-    # Safety step for extreme young/elderly outliers still in small buckets (< 3 in district)
-    eq_counts = Counter((c_gender[c], c_dist[c], c_band[c]) for c in c_band)
-    for ckey, band in list(c_band.items()):
-        if eq_counts[(c_gender[ckey], c_dist[ckey], band)] < 3:
-            bounds = c_age_bounds[ckey]
-            assert bounds is not None
-            if bounds[1] <= 29:
-                c_band[ckey] = "0-29"
-            elif bounds[0] >= 65:
-                c_band[ckey] = "65+"
-
-    # Adaptive geo roll-up: check (gender, district, tehsil) and (gender, district, pin3) group sizes
+    # Tehsil is finer than district: release it only when (gender, district, tehsil) holds >= k patients
     teh_eq = Counter((c_gender[c], c_dist[c], c_teh[c]) for c in clusters if c_teh[c])
-    pin_eq = Counter((c_gender[c], c_dist[c], c_pin3[c]) for c in clusters if c_pin3[c])
-    geo_k = max(2, policy.location_min_group)
 
     for ckey, grp in clusters.items():
         band = c_band.get(ckey, "")
         bounds = c_age_bounds.get(ckey)
         cohort = ""
-        if bounds:
+        if bounds and band:
             anchor = c_anchor[ckey]
-            # Derive truthful 5-to-20 year birth cohort matching the generalized band
-            m_top = re.match(r"^(\d+)\+$", band)
-            if m_top:
-                cohort = f"<={anchor - int(m_top.group(1))}"
-            elif "-" in band:
-                b_lo, b_hi = band.split("-", 1)
-                cohort = f"{anchor - int(b_hi)}-{anchor - int(b_lo)}"
-            else:
-                cohort = f"{anchor - bounds[1] - 4}-{anchor - bounds[0] + 4}"
+            # Truthful birth cohort matching the generalised band
+            b_lo, b_hi = band_bounds(band)
+            cohort = f"<={anchor - b_lo}" if b_hi >= _OPEN_HI else f"{anchor - b_hi}-{anchor - b_lo}"
 
         suppress_teh = not c_teh[ckey] or teh_eq[(c_gender[ckey], c_dist[ckey], c_teh[ckey])] < policy.min_group_size
-        pin3 = c_pin3[ckey]
-        pin_mode = "suppress" if (not pin3 or pin_eq[(c_gender[ckey], c_dist[ckey], pin3)] < geo_k) else "pin3"
+        pin_mode = "pin3" if c_keep_pin.get(ckey) else "suppress"
 
         for e in grp:
             if band:
