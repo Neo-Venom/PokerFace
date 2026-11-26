@@ -1,0 +1,25 @@
+# RakshaGuard Development Notes
+
+## Milestone M1: Detection Engine + Protected Clinical Spans
+
+Baseline starter (before M1 changes):
+- Total PII leaked: 2718 / 3230 (84.1%)
+- By script: latin 82.8%, deva 100.0%, hinglish 100.0%
+- By channel: content 83.5%, filename 100.0%, base64 100.0%, metadata 100.0%, key 100.0%, header 100.0%
+- Canaries leaked: 4 / 4
+- Medical values kept: 4855 / 4855 (100.0%)
+- Raw copies: 0
+
+### Step A: Structured Fields + Header/Key Sanitization + Numeric IDs
+- Value-first column & JSON scalar inference + multilingual header/key synonyms (EN/HI/Hinglish + misspellings)
+- Deterministic key/header collision resolution + iterative deep JSON traversal
+- FHIR R4 Bundle field sanitization (preserving references and valid R4 date syntax)
+- Strict corrupt-encoding quarantine (`corrupt_bytes_note.txt`), mislabeled CSV-JSON handling
+- Results (`check_dev.py`):
+  - Total PII leaked: 762 / 3230 (23.6%)
+  - By script: latin 18.5%, deva 69.9%, hinglish 100.0%
+  - By channel: content 22.6%, filename 100.0%, base64 100.0%, metadata 5.0%, key 0.0%, header 0.0%
+  - Canaries leaked: 3 / 4
+  - Medical values kept: 4855 / 4855 (100.0%)
+  - Raw copies: 0
+
