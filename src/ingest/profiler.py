@@ -17,7 +17,9 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
-_DIGIT_MAP = str.maketrans("०१२३४५६७८९", "0123456789")
+# All Indic-script, Arabic-Indic and fullwidth digits -> ASCII
+_DIGIT_MAP = {z + i: 48 + i for z in (0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0660, 0x06F0, 0xFF10)
+              for i in range(10)}
 
 _ROLE_SYNONYMS: dict[str, tuple[str, ...]] = {
     "PATIENT_NAME": (
