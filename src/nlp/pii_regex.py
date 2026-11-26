@@ -57,29 +57,43 @@ _DOB_LINE_RE = re.compile(
 _LABELLED_MRN_RE = re.compile(
     r"(?i)(?:\b(?:UHID|Reg(?:\.?|istration)?\s*No\.?|IPD\s*No\.?|OPD\s*No\.?|Patient\s*ID|MRN)|पंजीकरण\s*सं\.?|आईपीडी\s*सं\.?)\s*[:#\-]?\s*([A-Z0-9][A-Z0-9/\-]{4,22})"
 )
+_UUID_RE = re.compile(r"(?i)\b(?:urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 
 
 def extract_regex_spans(text: str) -> list[Span]:
     """Detect structured IDs, phones, emails, PINs, houses, landmarks, DOBs on shadow text."""
     shadow = shadow_normalize(text)
+    uuid_spans = [(m.start(), m.end()) for m in _UUID_RE.finditer(shadow)]
+
+    def _in_uuid(s: int, e: int) -> bool:
+        return any(us < e and ue > s for us, ue in uuid_spans)
+
     spans: list[Span] = []
 
     for kind, rx in PATTERNS:
         for m in rx.finditer(shadow):
+            if _in_uuid(m.start(), m.end()):
+                continue
             raw_surf = text[m.start() : m.end()]
             spans.append(Span(m.start(), m.end(), kind, raw_surf, script=detect_script(raw_surf)))
 
     for m in _LABELLED_MRN_RE.finditer(shadow):
         s, e = m.start(1), m.end(1)
+        if _in_uuid(s, e):
+            continue
         spans.append(Span(s, e, "MRN", text[s:e], script=detect_script(text[s:e])))
 
     for m in _DOB_LINE_RE.finditer(shadow):
         s, e = m.start(1), m.end(1)
+        if _in_uuid(s, e):
+            continue
         spans.append(Span(s, e, "DOB", text[s:e], script=detect_script(text[s:e])))
 
     for m in _PIN_CONTEXT_RE.finditer(shadow):
         grp = 1 if m.group(1) else 2
         s, e = m.start(grp), m.end(grp)
+        if _in_uuid(s, e):
+            continue
         spans.append(Span(s, e, "PIN", text[s:e], script=detect_script(text[s:e])))
 
     for kind, rx in (
@@ -88,12 +102,16 @@ def extract_regex_spans(text: str) -> list[Span]:
         ("LANDMARK", _LANDMARK_RE),
     ):
         for m in rx.finditer(shadow):
+            if _in_uuid(m.start(), m.end()):
+                continue
             raw_surf = text[m.start() : m.end()]
             spans.append(Span(m.start(), m.end(), kind, raw_surf, script=detect_script(raw_surf)))
 
     for m in _VILLAGE_RE.finditer(shadow):
         grp = 1 if m.group(1) else 2
         s, e = m.start(grp), m.end(grp)
+        if _in_uuid(s, e):
+            continue
         spans.append(Span(s, e, "VILLAGE", text[s:e].strip(), script=detect_script(text[s:e])))
 
     return spans

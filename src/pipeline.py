@@ -23,7 +23,7 @@ from src.linkage.cluster import link_and_assign_pseudonyms
 from src.linkage.evidence import extract_all_evidence
 from src.models import FileEntry
 from src.nlp.date_shifter import shift_compact_hl7_date, shift_date_value, shift_dates_in_text
-from src.nlp.indic_norm import shadow_normalize
+from src.nlp.indic_norm import name_tokens, shadow_normalize
 from src.nlp.medical_guard import MedicalGuard
 from src.nlp.pii_ner import PiiHarvester, extract_context_name_spans, resolve_and_scrub
 from src.nlp.pii_regex import extract_regex_spans
@@ -31,6 +31,7 @@ from src.privacy.audit import run_egress_audit
 from src.privacy.kanon import PrivacyPlan, build_privacy_plan, generalize_age_value, scrub_tehsils_and_ages_in_text
 from src.security.keys import KeyRing
 from src.security.safelog import install_pii_free_guards
+from src.security.vault import EncryptedVault
 
 _B64_RE = re.compile(r"^[A-Za-z0-9+/]{24,}={0,2}$")
 _REL_PREFIX_RE = re.compile(r"(?i)^(?:S/o|D/o|W/o|C/O|son of|daughter of|wife of)\s+")
@@ -200,6 +201,8 @@ def _rewrite_entry(
     harvester: PiiHarvester,
     entity_counts: Counter[str],
     plan: PrivacyPlan,
+    psn_by_id: dict[str, set[str]] | None = None,
+    psn_by_name: dict[str, set[str]] | None = None,
 ) -> str:
     if entry.is_clean_doc:
         if entry.file_type in ("csv", "tsv"):
@@ -383,7 +386,24 @@ def _rewrite_entry(
     if entry.file_type == "json":
         rec_by_ptr = {rec.loc: rec for rec in entry.records}
         doc_rec = rec_by_ptr.get("doc")
+        is_summary_json = (not rec_by_ptr) or (doc_rec is not None and doc_rec.pseudonym is None and len(rec_by_ptr) == 1)
         psn_placed_for_ptr: set[str] = set()
+
+        def _lookup_summary_psn(raw: str, allow_name: bool = False) -> str | None:
+            if not is_summary_json or not psn_by_id:
+                return None
+            norm_k = re.sub(r"[^a-z0-9]", "", shadow_normalize(raw).lower())
+            if len(norm_k) >= 5:
+                hits = psn_by_id.get(norm_k)
+                if hits and len(hits) == 1:
+                    return next(iter(hits))
+            if allow_name and psn_by_name:
+                nn = " ".join(name_tokens(raw))
+                if nn:
+                    hits = psn_by_name.get(nn)
+                    if hits and len(hits) == 1:
+                        return next(iter(hits))
+            return None
 
         def _rec_for_path(path: str) -> tuple[str, Any]:
             if doc_rec is not None:
@@ -394,6 +414,10 @@ def _rewrite_entry(
             return "", None
 
         def _scrub_key(k: str) -> str:
+            mapped = _lookup_summary_psn(k, allow_name=True)
+            if mapped:
+                entity_counts["MRN"] += 1
+                return mapped
             cleaned, spans = resolve_and_scrub(k, guard, harvester)
             for sp in spans:
                 entity_counts[sp.kind] += 1
@@ -501,6 +525,10 @@ def _rewrite_entry(
                 return "[ADDRESS]"
             if role == "TEHSIL" or "tehsil" in kl:
                 return "[ADDRESS]" if r_sup_teh else val
+            mapped_val = _lookup_summary_psn(val, allow_name=True)
+            if mapped_val:
+                entity_counts["MRN"] += 1
+                return mapped_val
             return _scrub_str(val, rec_uid=r_uid)
 
         cleaned = transform_json_iterative(entry.parsed_data, scrub_key_fn=_scrub_key, scrub_val_fn=_scrub_val)
@@ -572,8 +600,25 @@ def run_pipeline(input_dir: Path, output_dir: Path, policy: Policy | None = None
     evs = extract_all_evidence(entries, guard)
     link_and_assign_pseudonyms(evs, keyring, pol)
 
+    psn_by_id: dict[str, set[str]] = {}
+    psn_by_name: dict[str, set[str]] = {}
+    for ev in evs:
+        psn = ev.record.pseudonym
+        if not psn or ev.is_multi_patient_summary:
+            continue
+        for tok in ev.uhids | ev.abhas | ev.pans | ev.ins_ids | ev.phones | ev.aadhaars:
+            nk = re.sub(r"[^a-z0-9]", "", shadow_normalize(tok).lower())
+            if len(nk) >= 5:
+                psn_by_id.setdefault(nk, set()).add(psn)
+        for nt in ev.full_names:
+            nn = " ".join(nt)
+            if nn:
+                psn_by_name.setdefault(nn, set()).add(psn)
+
     # Adversarial Privacy Layer (Phase 5: per-patient date shifts + k-anonymity plan)
     privacy_plan = build_privacy_plan(entries, evs, keyring, pol)
+    raw_path_by_sha: dict[str, Path] = {e.input_sha256: p for p, _r, e in scanned}
+    vault = EncryptedVault(keyring.k_vault) if pol.encrypt_quarantine_archive else None
 
     # Rename PII-bearing filenames deterministically using harvested PII + regex
     used_out_paths: set[str] = set()
@@ -609,7 +654,7 @@ def run_pipeline(input_dir: Path, output_dir: Path, policy: Policy | None = None
             out_rel = entry.rel_output_path
             dest = san_dir / out_rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            serialized = _rewrite_entry(entry, guard, harvester, entity_counts, privacy_plan)
+            serialized = _rewrite_entry(entry, guard, harvester, entity_counts, privacy_plan, psn_by_id=psn_by_id, psn_by_name=psn_by_name)
             dest.write_text(serialized, encoding="utf-8", newline="")
             files_report.append(
                 {
@@ -635,6 +680,12 @@ def run_pipeline(input_dir: Path, output_dir: Path, policy: Policy | None = None
                     "reason": entry.reason or "quarantined",
                 }
             )
+            if vault is not None and entry.input_sha256 in raw_path_by_sha:
+                vault.write_quarantined_blob(
+                    output_dir / "quarantine" / f"{entry.rel_input_path}.enc",
+                    raw_path_by_sha[entry.input_sha256].read_bytes(),
+                    entry.input_sha256,
+                )
 
     audit_res = run_egress_audit(
         entries=entries,
@@ -645,6 +696,16 @@ def run_pipeline(input_dir: Path, output_dir: Path, policy: Policy | None = None
         harvester=harvester,
         secret_str=secret_for_audit,
     )
+    if vault is not None:
+        entry_by_sha = {e.input_sha256: e for e in entries}
+        for fr in files_report:
+            if fr.get("status") == "quarantined":
+                sha = str(fr.get("input_sha256", ""))
+                ent = entry_by_sha.get(sha)
+                if ent is not None and sha in raw_path_by_sha:
+                    q_dest = output_dir / "quarantine" / f"{ent.rel_input_path}.enc"
+                    if not q_dest.exists():
+                        vault.write_quarantined_blob(q_dest, raw_path_by_sha[sha].read_bytes(), sha)
     secret_for_audit = ""
 
     records_out.sort(key=lambda r: (r["file"], r["loc"]))

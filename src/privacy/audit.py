@@ -17,6 +17,8 @@ from src.nlp.pii_regex import extract_regex_spans
 
 _B64_RE = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
 _CRITICAL_RX_KINDS = {"ABHA_NUMBER", "ABHA_ADDRESS", "EMAIL", "PAN", "AADHAAR_MASKED", "INSURANCE_ID"}
+_UUID_RE = re.compile(r"(?i)\b(?:urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+_FHIR_STRUCT_KEYS = {"fullUrl", "id", "reference", "resourceType", "system", "code", "url", "versionId", "profile"}
 
 
 @dataclass
@@ -24,6 +26,11 @@ class AuditSummary:
     rescrubbed_files: int = 0
     quarantined_files: int = 0
     secret_clean: bool = True
+
+
+def _mask_uuids(text: str) -> str:
+    """Replace UUIDs with equal-length non-digit placeholders so audit regexes never split hex segments."""
+    return _UUID_RE.sub(lambda m: "u" * len(m.group(0)), text)
 
 
 def _decode_b64_snippets(text: str) -> str:
@@ -48,7 +55,7 @@ def _has_residual_pii(
 ) -> bool:
     if secret_str and len(secret_str) >= 4 and secret_str in text:
         return True
-    combined = _decode_b64_snippets(text)
+    combined = _mask_uuids(_decode_b64_snippets(text))
     prot = guard.protected_spans(combined)
     for sp in extract_regex_spans(combined):
         if sp.kind in _CRITICAL_RX_KINDS and not guard.is_protected_span(sp.start, sp.end, prot, strict=True):
@@ -64,18 +71,40 @@ def _has_residual_pii(
     return False
 
 
-def _scrub_json_tree_fallback(obj: Any, guard: MedicalGuard, harvester: PiiHarvester) -> Any:
+def _scrub_json_tree_fallback(
+    obj: Any,
+    guard: MedicalGuard,
+    harvester: PiiHarvester,
+    key_name: str = "",
+    preserve_struct: bool = False,
+) -> Any:
     if isinstance(obj, dict):
+        is_struct = preserve_struct or obj.get("resourceType") in (
+            "Bundle",
+            "Patient",
+            "Encounter",
+            "Observation",
+            "Condition",
+            "Procedure",
+            "MedicationRequest",
+            "DiagnosticReport",
+            "DocumentReference",
+        )
         return {
-            resolve_and_scrub(str(k), guard, harvester)[0]: _scrub_json_tree_fallback(v, guard, harvester)
+            (str(k) if (is_struct and str(k) in _FHIR_STRUCT_KEYS) else resolve_and_scrub(str(k), guard, harvester)[0]): _scrub_json_tree_fallback(
+                v, guard, harvester, key_name=str(k), preserve_struct=is_struct
+            )
             for k, v in obj.items()
         }
     if isinstance(obj, list):
-        return [_scrub_json_tree_fallback(x, guard, harvester) for x in obj]
+        return [_scrub_json_tree_fallback(x, guard, harvester, key_name=key_name, preserve_struct=preserve_struct) for x in obj]
     if isinstance(obj, str):
-        if _B64_RE.match(obj.strip()):
+        st = obj.strip()
+        if _UUID_RE.fullmatch(st) or (preserve_struct and key_name in _FHIR_STRUCT_KEYS):
+            return obj
+        if _B64_RE.match(st):
             try:
-                raw = base64.b64decode(obj.strip() + "=" * (-len(obj.strip()) % 4)).decode("utf-8", errors="strict")
+                raw = base64.b64decode(st + "=" * (-len(st) % 4)).decode("utf-8", errors="strict")
                 cleaned, _ = resolve_and_scrub(raw, guard, harvester)
                 return base64.b64encode(cleaned.encode("utf-8")).decode("ascii")
             except Exception:
@@ -138,7 +167,8 @@ def run_egress_audit(
             try:
                 if entry and entry.file_type in ("json", "fhir"):
                     data = json.loads(txt)
-                    rescrubbed = _scrub_json_tree_fallback(data, guard, harvester)
+                    is_fhir = entry.file_type == "fhir" or (isinstance(data, dict) and data.get("resourceType") == "Bundle")
+                    rescrubbed = _scrub_json_tree_fallback(data, guard, harvester, preserve_struct=is_fhir)
                     new_txt = json.dumps(rescrubbed, ensure_ascii=False, indent=2) + "\n"
                 else:
                     lines = txt.splitlines(keepends=True)

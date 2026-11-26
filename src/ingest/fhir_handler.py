@@ -150,20 +150,38 @@ def sanitize_fhir_bundle(
             if isinstance(ref_obj, dict) and isinstance(ref_obj.get("display"), str):
                 ref_obj["display"] = psn or "[NAME]"
 
-        if isinstance(res.get("date"), str):
-            res["date"] = shift_date_fn(res["date"])
-        if isinstance(res.get("effectiveDateTime"), str):
-            res["effectiveDateTime"] = shift_date_fn(res["effectiveDateTime"])
-        if isinstance(res.get("authoredOn"), str):
-            res["authoredOn"] = shift_date_fn(res["authoredOn"])
-        if isinstance(res.get("recordedDate"), str):
-            res["recordedDate"] = shift_date_fn(res["recordedDate"])
-        if isinstance(res.get("issued"), str):
-            res["issued"] = shift_date_fn(res["issued"])
-        if isinstance(res.get("period"), dict):
-            for pk in ("start", "end"):
-                if isinstance(res["period"].get(pk), str):
-                    res["period"][pk] = shift_date_fn(res["period"][pk])
+        for dkey in (
+            "date",
+            "effectiveDateTime",
+            "authoredOn",
+            "recordedDate",
+            "issued",
+            "onsetDateTime",
+            "abatementDateTime",
+            "performedDateTime",
+            "occurrenceDateTime",
+            "created",
+            "assertedDate",
+        ):
+            if isinstance(res.get(dkey), str):
+                res[dkey] = shift_date_fn(res[dkey])
+
+        def _shift_period_dict(p_obj: Any) -> None:
+            if isinstance(p_obj, dict):
+                for pk in ("start", "end"):
+                    if isinstance(p_obj.get(pk), str):
+                        p_obj[pk] = shift_date_fn(p_obj[pk])
+
+        for pkey in ("period", "effectivePeriod", "onsetPeriod", "abatementPeriod", "performedPeriod"):
+            _shift_period_dict(res.get(pkey))
+        if isinstance(res.get("dispenseRequest"), dict):
+            _shift_period_dict(res["dispenseRequest"].get("validityPeriod"))
+        if isinstance(res.get("context"), dict):
+            _shift_period_dict(res["context"].get("period"))
+        if isinstance(res.get("effectiveTiming"), dict) and isinstance(res["effectiveTiming"].get("event"), list):
+            res["effectiveTiming"]["event"] = [
+                shift_date_fn(ev) if isinstance(ev, str) else ev for ev in res["effectiveTiming"]["event"]
+            ]
 
         # Clean encounter/document identifiers (e.g., IPD numbers)
         if rtype == "Encounter" and isinstance(res.get("identifier"), list):

@@ -257,7 +257,7 @@ def _extract_from_text_blob(ev: RecordEvidence, text: str, guard: MedicalGuard, 
 
     norm_txt = shadow_normalize(text)
     norm_prot = guard.protected_spans(norm_txt)
-    for m in re.finditer(r"(?i)\b(?:age|आयु|उम्र)[ \t]*[:\-]?[ \t]*(\d{1,3})[ \t]*(?:yrs?|years?|वर्ष|y)?(?:[ \t]*/[ \t]*([MF]))?\b|\b(\d{1,3})[ \t]*(?:yrs?|years?|वर्ष)(?:[ \t]*/[ \t]*([MF]))?\b|\b(\d{1,3})[ \t]*/[ \t]*([MF])\b", norm_txt):
+    for m in re.finditer(r"(?i)\b(?:age|आयु|उम्र)[ \t]*[:\-]?[ \t]*(\d{1,3})[ \t]*(?:yrs?|years?|वर्ष|y)?(?:[ \t]*/[ \t]*([MF])\b)?|\b(\d{1,3})[ \t]*(?:yrs?|years?|वर्ष)(?:[ \t]*/[ \t]*([MF])\b)?|\b(\d{1,3})[ \t]*(?:y[ \t]*)?/[ \t]*([MF])\b", norm_txt):
         # Skip disease durations in clinical history (e.g. "H/O TB 12 yrs back", "x 3 yrs")
         if any(ps < m.end() and pe > m.start() and tag == "MEDICAL" for ps, pe, tag in norm_prot):
             continue

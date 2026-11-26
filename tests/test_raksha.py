@@ -1,6 +1,7 @@
 """Synthetic unit & adversarial regression suite for Project RAKSHA (no dev/truth fixtures)."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from src.nlp.pii_ner import PiiHarvester, resolve_and_scrub
 from src.pipeline import run_pipeline
 from src.privacy.kanon import format_age_band
 from src.security.keys import KeyRing
+from src.security.vault import EncryptedVault
 
 
 class TestRakshaCore(unittest.TestCase):
@@ -73,7 +75,82 @@ class TestRakshaCore(unittest.TestCase):
     def test_truthful_age_band(self) -> None:
         self.assertEqual(format_age_band(48, 48, width=5), "45-49")
         self.assertEqual(format_age_band(49, 50, width=5), "45-54")
+        self.assertEqual(format_age_band(39, 40, width=20), "30-49")
+        self.assertEqual(format_age_band(59, 60, width=20, top_code=80), "50-69")
         self.assertEqual(format_age_band(89, 91, width=5, top_code=85), "85+")
+
+    def test_fhir_uuid_performed_whatsapp_and_vault(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            inp = root / "in"
+            out = root / "out"
+            inp.mkdir()
+            (inp / "opd.csv").write_text(
+                "UHID,Patient Name,Age,Gender,Mobile\n"
+                "SNJ/26/0009,Kavita Verma,48,F,9811223344\n",
+                encoding="utf-8",
+            )
+            (inp / "whatsapp_forward_0001.txt").write_text(
+                "Forwarded message\nKavita Verma 48 Y / F\nUHID: SNJ/26/0009\nDx: Viral fever\n",
+                encoding="utf-8",
+            )
+            bundle = {
+                "resourceType": "Bundle",
+                "type": "collection",
+                "entry": [
+                    {
+                        "fullUrl": "urn:uuid:93368d52-86de-4263-8902-419343ba0fb6",
+                        "resource": {
+                            "resourceType": "Patient",
+                            "id": "93368d52-86de-4263-8902-419343ba0fb6",
+                            "identifier": [{"system": "http://hospital.in/uhid", "value": "SNJ/26/0009"}],
+                            "name": [{"text": "Kavita Verma"}],
+                        },
+                    },
+                    {
+                        "fullUrl": "urn:uuid:b6ae9c60-4286-4730-8390-bd257f0acd4c",
+                        "resource": {
+                            "resourceType": "Procedure",
+                            "id": "b6ae9c60-4286-4730-8390-bd257f0acd4c",
+                            "status": "completed",
+                            "code": {"text": "IV Fluids"},
+                            "subject": {"reference": "urn:uuid:93368d52-86de-4263-8902-419343ba0fb6"},
+                            "performedDateTime": "2026-03-14T09:00:00+05:30",
+                        },
+                    },
+                ],
+            }
+            (inp / "bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
+            (inp / "patient_index.json").write_text(
+                json.dumps({"by_uhid": {"SNJ/26/0009": {"visits": 2}}, "by_name": {"Kavita Verma": "SNJ/26/0009"}}),
+                encoding="utf-8",
+            )
+            pdf_bytes = b"%PDF-1.4 quarantined"
+            (inp / "scan.pdf").write_bytes(pdf_bytes)
+            import hashlib
+
+            pdf_sha = hashlib.sha256(pdf_bytes).hexdigest()
+            os.environ["RAKSHA_SECRET"] = "vault-audit-secret"
+            rc = run_pipeline(inp, out, Policy(encrypt_quarantine_archive=True))
+            self.assertEqual(rc, 0)
+
+            out_bundle = json.loads((out / "sanitized" / "bundle.json").read_text(encoding="utf-8"))
+            self.assertEqual(out_bundle["entry"][0]["resource"]["id"], "93368d52-86de-4263-8902-419343ba0fb6")
+            self.assertEqual(out_bundle["entry"][1]["resource"]["id"], "b6ae9c60-4286-4730-8390-bd257f0acd4c")
+            self.assertNotIn("2026-03-14", out_bundle["entry"][1]["resource"]["performedDateTime"])
+
+            wa = (out / "sanitized" / "whatsapp_forward_0001.txt").read_text(encoding="utf-8")
+            self.assertNotIn(" 48 ", wa)
+            self.assertIn("40-59 Y / F", wa)
+
+            idx_out = json.loads((out / "sanitized" / "patient_index.json").read_text(encoding="utf-8"))
+            uhid_keys = list(idx_out["by_uhid"].keys())
+            self.assertTrue(len(uhid_keys) == 1 and uhid_keys[0].startswith("PSN-"))
+            self.assertEqual(idx_out["by_name"].get(uhid_keys[0]), uhid_keys[0])
+
+            enc_blob = (out / "quarantine" / "scan.pdf.enc").read_bytes()
+            kr = KeyRing(b"vault-audit-secret")
+            self.assertEqual(EncryptedVault(kr.k_vault).unseal_bytes(enc_blob, pdf_sha), pdf_bytes)
 
     def test_end_to_end_quarantine_and_linkage(self) -> None:
         with tempfile.TemporaryDirectory() as td:

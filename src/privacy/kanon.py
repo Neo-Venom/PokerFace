@@ -21,16 +21,16 @@ _TEHSIL_INLINE_RE = re.compile(
     r"|तहसील\s*[:.\-]?\s*(\[NAME\]|[^\n,;.|]{1,28}))"
 )
 _AGE_REWRITE_RE = re.compile(
-    r"(?i)(\b(?:age(?:/sex)?|आयु|उम्र)\s*[:\-]?\s*)(\d{1,3})([ \t]*(?:yrs?|years?|वर्ष|y)?(?:[ \t]*/[ \t]*[MF])?\b)"
-    r"|\b(\d{1,3})([ \t]*(?:yrs?|years?|वर्ष)(?:[ \t]*/[ \t]*[MF])?)\b"
-    r"|\b(\d{1,3})([ \t]*/[ \t]*[MF])\b"
+    r"(?i)(\b(?:age(?:/sex)?|आयु|उम्र)\s*[:\-]?\s*)(\d{1,3})([ \t]*(?:yrs?|years?|वर्ष|y)?(?:[ \t]*/[ \t]*[MF]\b)?)"
+    r"|\b(\d{1,3})([ \t]*(?:yrs?|years?|वर्ष)(?:[ \t]*/[ \t]*[MF]\b)?)"
+    r"|\b(\d{1,3})([ \t]*(?:yrs?|years?|y)?[ \t]*/[ \t]*[MF]\b)"
 )
 _HIST_BEFORE_RE = re.compile(r"(?i)(?:\b(?:h/o|k/c/o|c/o|since|for|past|last|duration|history|approx|x)\b|से|पहले)\s*[:\-]?\s*$")
 _HIST_AFTER_RE = re.compile(r"(?i)^\s*(?:back|ago|later|earlier|prior|duration|se|से|पहले|बाद|तक)\b")
 
 
 def format_age_band(age_min: int, age_max: int, width: int = 5, top_code: int = 85) -> str:
-    """Compute a truthful age band covering [age_min, age_max] without inventing ages."""
+    """Compute a truthful age band covering [age_min, age_max] without over-widening straddlers."""
     lo_c = max(0, min(age_min, age_max))
     hi_c = max(0, max(age_min, age_max))
     if lo_c >= top_code:
@@ -39,6 +39,20 @@ def format_age_band(age_min: int, age_max: int, width: int = 5, top_code: int = 
         return f"{top_code - width}+"
     lo_b = (lo_c // width) * width
     hi_b = ((hi_c // width) * width) + (width - 1)
+    # If [lo_c, hi_c] crosses a width boundary (e.g., 39-40 at width=10 or 20), pick a tighter 5-yr-aligned band
+    if (hi_b - lo_b + 1) > width:
+        min_span = ((hi_c - lo_c) // 5 + 1) * 5
+        w_eff = max(width, min_span)
+        lo_5 = max(0, (lo_c // 5) * 5)
+        hi_5 = ((hi_c // 5) * 5) + 4
+        if (hi_5 - lo_5 + 1) <= w_eff:
+            best_lo = min(lo_5, max(0, hi_5 - w_eff + 1))
+            mid_shift = max(0, (w_eff - (hi_5 - lo_5 + 1)) // 2 // 5 * 5)
+            lo_b = max(0, lo_5 - mid_shift)
+            hi_b = lo_b + w_eff - 1
+            if hi_b < hi_5:
+                lo_b = best_lo
+                hi_b = lo_b + w_eff - 1
     if hi_b >= top_code:
         return f"{lo_b}+"
     return f"{lo_b}-{hi_b}"
@@ -236,6 +250,7 @@ def build_privacy_plan(
     # Adaptive geo roll-up: check (gender, district, tehsil) and (gender, district, pin3) group sizes
     teh_eq = Counter((c_gender[c], c_dist[c], c_teh[c]) for c in clusters if c_teh[c])
     pin_eq = Counter((c_gender[c], c_dist[c], c_pin3[c]) for c in clusters if c_pin3[c])
+    geo_k = max(2, policy.location_min_group)
 
     for ckey, grp in clusters.items():
         band = c_band.get(ckey, "")
@@ -255,7 +270,7 @@ def build_privacy_plan(
 
         suppress_teh = not c_teh[ckey] or teh_eq[(c_gender[ckey], c_dist[ckey], c_teh[ckey])] < policy.min_group_size
         pin3 = c_pin3[ckey]
-        pin_mode = "suppress" if (not pin3 or pin_eq[(c_gender[ckey], c_dist[ckey], pin3)] < policy.min_group_size) else "pin3"
+        pin_mode = "suppress" if (not pin3 or pin_eq[(c_gender[ckey], c_dist[ckey], pin3)] < geo_k) else "pin3"
 
         for e in grp:
             if band:
@@ -281,7 +296,7 @@ def generalize_age_value(raw: str, age_band: str | None) -> str:
         return raw
     s = str(raw).strip()
     norm = shadow_normalize(s)
-    m = re.match(r"^(\d{1,3})([ \t]*(?:/[ \t]*[MF]|yrs?|years?|वर्ष|y(?:/[MF])?)?)$", norm, re.I)
+    m = re.match(r"^-?(\d{1,3})([ \t]*(?:y?[ \t]*/[ \t]*[MF]|yrs?|years?|वर्ष|y)?)$", norm, re.I)
     if m:
         return f"{age_band}{m.group(2) or ''}"
     return s

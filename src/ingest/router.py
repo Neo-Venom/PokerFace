@@ -189,16 +189,6 @@ def scan_input_tree(inp: Path) -> list[tuple[Path, str, FileEntry]]:
     return items
 
 
-_SAFE_FNAME_WORDS = {
-    "discharge", "summary", "ds", "report", "nursing", "note", "notes", "whatsapp",
-    "forward", "opd", "ipd", "claims", "registration", "legacy", "export", "patients",
-    "bundle", "ward", "visitor", "log", "consent", "form", "ambulance", "helpdesk",
-    "tickets", "patient", "index", "vitals", "sheet", "bulk", "lab", "results",
-    "dengue", "management", "protocol", "drug", "formulary", "reference", "ranges",
-    "census", "rx", "readme", "hl7", "cda", "mislabeled", "city", "lifeline",
-    "pathkind", "sanjeevani", "jeevanjyoti", "arogya", "dhhardoi", "dhh", "doc",
-    "guidelines", "template", "summary", "record", "records", "hospital",
-}
 _FNAME_ID_RE = re.compile(
     r"(?:(?<!\d)[6-9]\d{9}(?!\d)"
     r"|(?<!\d)\d{12,14}(?!\d)"
