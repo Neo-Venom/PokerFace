@@ -23,3 +23,17 @@ Baseline starter (before M1 changes):
   - Medical values kept: 4855 / 4855 (100.0%)
   - Raw copies: 0
 
+### Step B: Identifier Regex/Context + Numeric Context Classifier
+- All Indian phone formats (+91, 0-prefix, spaces/dashes, extensions, masked, Devanagari digits), Aadhaar (12-digit & masked), ABHA (14-digit & ABHA addresses), PAN, Insurance IDs, Email, MRN/UHID/IPD + corpus-derived MRN skeleton learner
+- Numeric context classifier protecting platelet counts, lab ranges, doses, frequencies (`1-0-1`), and BP/vitals (`150/90`)
+- Results (`check_dev.py`):
+  - Total PII leaked: 536 / 3230 (16.6%)
+  - Zero leaks (0.0%) on AADHAAR, AADHAAR_MASKED, PIN, EMAIL, PAN, DOB, ABHA_NUMBER, INSURANCE_ID
+  - PHONE leaked: 6 / 308 (1.9%); MRN leaked: 43 / 850 (5.1%)
+  - By script: latin 11.3%, deva 62.9%, hinglish 100.0%
+  - By channel: content 15.3%, filename 100.0%, base64 100.0%, metadata 5.0%, key 0.0%, header 0.0%
+  - Canaries leaked: 3 / 4
+  - Medical values kept: 4855 / 4855 (100.0%)
+  - Raw copies: 0
+
+

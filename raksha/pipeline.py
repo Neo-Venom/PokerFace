@@ -5,12 +5,18 @@ import csv
 import hashlib
 import io
 import json
+import re
 import sys
 import time
 from pathlib import Path
 
 from raksha.config import derive_subkey, load_policy, require_secret
-from raksha.detect.structured import process_table_rows, sanitize_json_data
+from raksha.detect.identifiers import (
+    derive_id_patterns_from_values,
+    detect_identifier_spans,
+    redact_spans,
+)
+from raksha.detect.structured import infer_column_type, process_table_rows, sanitize_json_data
 from raksha.ingest.loader import decode_bytes, load_json_safe, load_tabular, sniff_format
 
 
@@ -24,15 +30,45 @@ def peak_rss_mb() -> float:
         return 0.0
 
 
+def _collect_mrn_examples(parsed_items: list[tuple[str, str, object]]) -> list[str]:
+    """Pre-scan structured tables/JSONs to learn hospital-specific MRN/UHID formats from the data."""
+    mrns: list[str] = []
+    for _rel, fmt, payload in parsed_items:
+        if fmt in ("csv", "tsv") and isinstance(payload, list) and len(payload) > 1:
+            header, body = payload[0], payload[1:]
+            for c_idx, h in enumerate(header):
+                vals = [r[c_idx] if c_idx < len(r) else "" for r in body]
+                if infer_column_type(vals, header=h) == "MRN":
+                    mrns.extend(str(v).strip() for v in vals if str(v).strip())
+        elif fmt == "json" and isinstance(payload, dict):
+            # Iterative walk of list-of-dict records for MRN columns
+            stack = [payload]
+            while stack:
+                node = stack.pop()
+                if isinstance(node, dict):
+                    for k, v in node.items():
+                        if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+                            for rk in v[0].keys():
+                                vals = [row.get(rk) for row in v if rk in row]
+                                if infer_column_type(vals, header=rk, parent_key=k) == "MRN":
+                                    mrns.extend(str(x).strip() for x in vals if x is not None and str(x).strip())
+                        elif isinstance(v, (dict, list)):
+                            stack.append(v)
+                elif isinstance(node, list):
+                    for item in node:
+                        if isinstance(item, (dict, list)):
+                            stack.append(item)
+    return mrns
+
+
 def _process_tabular(
-    text: str,
+    rows: list[list[str]],
     delimiter: str,
     rel: str,
     records: list[dict],
     text_scrubber=None,
     stats: dict[str, int] | None = None,
 ) -> str:
-    rows = load_tabular(text, delimiter)
     clean_header, clean_body = process_table_rows(rows, text_scrubber=text_scrubber, stats=stats)
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=delimiter, lineterminator="\n")
@@ -44,13 +80,12 @@ def _process_tabular(
 
 
 def _process_json(
-    text: str,
+    data: object,
     rel: str,
     records: list[dict],
     text_scrubber=None,
     stats: dict[str, int] | None = None,
 ) -> str:
-    data = load_json_safe(text)
     is_doc = (
         not isinstance(data, dict)
         or data.get("resourceType") == "Bundle"
@@ -84,8 +119,8 @@ def _process_text(
     return text_scrubber(text) if text_scrubber is not None else text
 
 
-def run_pipeline(input_dir: Path, output_dir: Path, text_scrubber=None) -> int:
-    """Run deterministic de-identification pipeline from input_dir to output_dir."""
+def run_pipeline(input_dir: Path, output_dir: Path) -> int:
+    """Run deterministic two-pass de-identification pipeline from input_dir to output_dir."""
     t0 = time.monotonic()
     try:
         secret = require_secret()
@@ -101,26 +136,65 @@ def run_pipeline(input_dir: Path, output_dir: Path, text_scrubber=None) -> int:
     san_dir.mkdir(parents=True, exist_ok=True)
     sys.setrecursionlimit(5000)
 
-    files_report: list[dict] = []
-    records: list[dict] = []
-    entity_stats: dict[str, int] = {}
+    input_paths = sorted(
+        (p for p in input_dir.rglob("*") if p.is_file()),
+        key=lambda p: p.relative_to(input_dir).as_posix(),
+    )
 
-    input_paths = sorted((p for p in input_dir.rglob("*") if p.is_file()), key=lambda p: p.relative_to(input_dir).as_posix())
-
+    # Pass 1: ingest & parse safely (fail-safe quarantine on error)
+    ingested: list[dict] = []
+    parsed_items: list[tuple[str, str, object]] = []
     for path in input_paths:
         rel = path.relative_to(input_dir).as_posix()
         raw = path.read_bytes()
-        entry: dict = {"input_sha256": hashlib.sha256(raw).hexdigest()}
+        sha = hashlib.sha256(raw).hexdigest()
         try:
             text = decode_bytes(raw)
             fmt = sniff_format(path, text)
             if fmt in ("csv", "tsv"):
-                delim = "\t" if fmt == "tsv" else ","
-                result = _process_tabular(text, delim, rel, records, text_scrubber=text_scrubber, stats=entity_stats)
+                payload = load_tabular(text, "\t" if fmt == "tsv" else ",")
             elif fmt == "json":
-                result = _process_json(text, rel, records, text_scrubber=text_scrubber, stats=entity_stats)
+                payload = load_json_safe(text)
             else:
-                result = _process_text(text, rel, records, text_scrubber=text_scrubber)
+                payload = text
+            ingested.append({"rel": rel, "sha": sha, "fmt": fmt, "payload": payload, "error": None})
+            parsed_items.append((rel, fmt, payload))
+        except (ValueError, RecursionError, UnicodeError, csv.Error) as exc:
+            reason = str(exc) if isinstance(exc, ValueError) and str(exc).isidentifier() else type(exc).__name__
+            ingested.append({"rel": rel, "sha": sha, "fmt": None, "payload": None, "error": reason})
+
+    # Derive hospital-specific MRN/UHID regexes from the ingested structured columns
+    extra_mrn_patterns: list[re.Pattern] = derive_id_patterns_from_values(
+        _collect_mrn_examples(parsed_items)
+    )
+
+    entity_stats: dict[str, int] = {}
+
+    def scrub_free_text(txt: str) -> str:
+        spans = detect_identifier_spans(txt, extra_mrn_patterns=extra_mrn_patterns)
+        return redact_spans(txt, spans, stats=entity_stats)
+
+    # Pass 2: sanitize & write outputs
+    files_report: list[dict] = []
+    records: list[dict] = []
+    for item in ingested:
+        rel = item["rel"]
+        entry: dict = {"input_sha256": item["sha"]}
+        if item["error"] is not None:
+            entry.update(output=None, status="quarantined", reason=item["error"])
+            files_report.append(entry)
+            continue
+
+        fmt = item["fmt"]
+        payload = item["payload"]
+        try:
+            if fmt in ("csv", "tsv"):
+                delim = "\t" if fmt == "tsv" else ","
+                result = _process_tabular(payload, delim, rel, records, text_scrubber=scrub_free_text, stats=entity_stats)
+            elif fmt == "json":
+                result = _process_json(payload, rel, records, text_scrubber=scrub_free_text, stats=entity_stats)
+            else:
+                result = _process_text(payload, rel, records, text_scrubber=scrub_free_text)
 
             dest = san_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,281 @@
+"""Step B: Multilingual identifier regex/context detector, corpus ID learner, and numeric context classifier."""
+from __future__ import annotations
+
+import re
+import unicodedata
+from dataclasses import dataclass
+
+_DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+_ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u00ad]")
+
+
+@dataclass(frozen=True)
+class Span:
+    start: int
+    end: int
+    label: str
+    text: str
+    source: str = "identifier"
+
+
+def to_digit_ascii_with_map(text: str) -> tuple[str, list[int]]:
+    """Convert Devanagari digits to ASCII while keeping a 1:1 offset map back to `text` (strips nothing, preserves length)."""
+    out_chars: list[str] = []
+    idx_map: list[int] = []
+    for i, ch in enumerate(text):
+        code = ord(ch)
+        if 0x0966 <= code <= 0x096F:
+            out_chars.append(chr(ord("0") + (code - 0x0966)))
+        else:
+            out_chars.append(ch)
+        idx_map.append(i)
+    return "".join(out_chars), idx_map
+
+
+# --------------------------------------------------------------------------- numeric context classifier
+_CLINICAL_UNIT_AFTER_RE = re.compile(
+    r"^\s*(?:/\s*(?:uL|ul|mm3|min|hr|day|wk)|mg/dL|g/dL|mmol/L|mIU/L|IU/L|mg|mcg|ug|ml|mL|g\b|IU\b|%|mmHg|bpm|kg\b|°?[FC]\b|days?\b|wks?\b|weeks?\b|months?\b|yrs?\b|years?\b|puffs?\b|tabs?\b|sachet|वर्ष|दिन|माह|सप्ताह)",
+    re.I,
+)
+_CLINICAL_TERM_BEFORE_RE = re.compile(
+    r"(?:platelet(?:\s+count)?|wbc(?:\s+count)?|rbc|hb|haemoglobin|hemoglobin|hba1c|rbs|blood\s+sugar|"
+    r"creatinine|sodium|potassium|tsh|loinc|bp|pulse|temp(?:erature)?|spo2|weight|"
+    r"dose|dosage|ref(?:erence)?\s*range|range|amount|rs\.?|inr|₹|"
+    r"tab\.?|cap\.?|inj\.?|syr\.?|inh\.?|sachet|paracetamol|dolo|metformin|atorvastatin|"
+    r"azithromycin|ceftriaxone|amlodipine|telmisartan|ramipril|artesunate|pantoprazole)\s*[:=\-]?\s*$",
+    re.I,
+)
+_PII_NUM_BEFORE_RE = re.compile(
+    r"(?:mob(?:ile)?|ph(?:one)?|tel|call(?:\s+karo)?|contact|whatsapp|callback|मोबाइल|फ़ोन|फोन|संपर्क|"
+    r"aadhaar|aadhar|adhaar|uidai|आधार|abha|आभा|uhid|mrn|ipd|reg\.?\s*no|पंजीकरण|आईपीडी|"
+    r"pin(?:\s*code)?|zip|पिन)\s*[:.#=\-]?\s*$",
+    re.I,
+)
+_DATE_CONTEXT_RE = re.compile(r"(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})")
+
+
+def is_clinical_numeric_context(text: str, start: int, end: int, kind: str) -> bool:
+    """Return True if a numeric span sits inside a clinical/lab/dose/vital context (NOT an ID)."""
+    before = text[max(0, start - 45) : start]
+    after = text[end : min(len(text), end + 30)]
+
+    # Explicit PII label before the number overrides ambiguity
+    if _PII_NUM_BEFORE_RE.search(before):
+        return False
+
+    # Unit immediately following (e.g. "240124 /uL", "650 mg", "150000-410000")
+    if _CLINICAL_UNIT_AFTER_RE.match(after):
+        return True
+
+    # Range like "150000-410000" or "4000-11000"
+    if re.match(r"^\s*[-–]\s*\d+", after) or re.search(r"\d+\s*[-–]\s*$", before):
+        if kind in ("PIN", "PHONE", "AADHAAR", "ABHA_NUMBER"):
+            return True
+
+    # Clinical test or drug right before the number
+    if _CLINICAL_TERM_BEFORE_RE.search(before):
+        return True
+
+    # Frequency / vital slash patterns like 1-0-1, 150/90
+    if re.match(r"^\s*/\s*\d{2,3}\b", after) or re.search(r"\b\d{2,3}\s*/\s*$", before):
+        return True
+
+    return False
+
+
+# --------------------------------------------------------------------------- core identifier patterns
+_PHONE_PATTERNS = [
+    # +91 / 0 + 10 digits with spaces/dashes/dots + optional extension
+    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|0)?[6-9]\d{4}[\s.\-]?\d{5}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
+    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|0)?[6-9]\d{2}[\s.\-]?\d{3}[\s.\-]?\d{4}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
+    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|0)?[6-9]\d[\s.\-]?\d{4}[\s.\-]?\d{4}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
+    # Masked phone like 98XXXXXX10
+    re.compile(r"(?<![\dA-Za-z])[6-9]\d[xX*]{4,6}\d{2,4}(?![\dA-Za-z])"),
+]
+# Phone trigger for landlines or short/non-[6-9] local extensions when explicitly labeled
+_LABELED_PHONE_RE = re.compile(
+    r"(?i)\b(?:mob|mobile|phone|ph|tel|contact|whatsapp|callback|मोबाइल|फ़ोन|फोन)\s*[:.#\-]\s*(\+?[\d][\d\s.\-]{7,16}\d(?:\s*(?:ext\.?|x)\s*\d{2,5})?)"
+)
+
+_ABHA_NUM_RE = re.compile(r"(?<!\d)\d{2}[\s\-]\d{4}[\s\-]\d{4}[\s\-]\d{4}(?!\d)|(?<!\d)\d{14}(?!\d)")
+_ABHA_ADDR_RE = re.compile(r"(?<![\w.+-])[A-Za-z0-9._+-]{2,}@(?:abdm|ndhm|sbx)\b", re.I)
+_EMAIL_RE = re.compile(r"(?<![\w.+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_AADHAAR_MASKED_RE = re.compile(r"(?<!\w)(?:[xX*]{4}[\s\-]?[xX*]{4}[\s\-]?\d{4}|[xX*]{8}\d{4})(?!\w)")
+_AADHAAR_FULL_RE = re.compile(r"(?<!\d)\d{4}[\s\-]?\d{4}[\s\-]?\d{4}(?!\d)")
+_PAN_RE = re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b")
+_INSURANCE_PATTERNS = [
+    re.compile(r"\b(?:PMJAY|AB-?PMJAY|CGHS|ESIS|RSBY)[-/][A-Z0-9]{1,8}(?:[-/][A-Z0-9]{2,})+\b", re.I),
+    re.compile(r"\bPOL/\d{2,4}/\d{4,}\b", re.I),
+]
+_MRN_PATTERNS = [
+    re.compile(r"\b[A-Z]{2,6}/\d{2,4}/\d{4,}\b"),      # e.g. SNJ/26/064127, IP/26/00130
+    re.compile(r"\b[A-Z]{2,6}-\d{5,}\b"),              # e.g. JJH-0077132, UHID-010610
+    re.compile(r"\b[A-Z]{2,6}\d{4}-\d{4,}\b"),         # e.g. DHH2026-084999
+    re.compile(r"\b[A-Z]{2,6}-IPD-\d{3,}\b"),          # e.g. DHH-IPD-00591
+    re.compile(r"\bIPD-\d{4}-\d{3,}\b"),               # e.g. IPD-2026-00432
+    re.compile(r"\bADM\d{4,}\b"),                      # e.g. ADM000162
+]
+_LABELED_MRN_RE = re.compile(
+    r"(?i)(?:\bUHID|\bMRN|\bReg\.?\s*No\.?|\bIPD\s*No\.?|पंजीकरण\s*सं\.?|आईपीडी\s*सं\.?)\s*[:#]\s*([A-Z0-9][A-Z0-9/\-]{3,24})"
+)
+_DOB_LINE_RE = re.compile(
+    r"(?i)(?:\bDOB|\bDate\s+of\s+Birth|\bBirth\s+Date|जन्म\s*तिथि)\s*[:\-]\s*(\d{1,4}[./\-]\d{1,2}[./\-]\d{1,4})"
+)
+_PIN_CONTEXT_RE = re.compile(
+    r"(?:-\s+|,\s+|\bPIN\s*[:\s\-]+|पिन\s*[:\s\-]+)([1-8]\d{5})(?!\d)",
+    re.I,
+)
+
+# Exclusions for MRN regex (billing/encounter/clinical codes that are not patient UHID/MRN)
+_MRN_PREFIX_EXCLUDE = ("BL/", "OPD/", "LOINC", "ICD")
+
+
+def derive_id_patterns_from_values(mrn_values: list[str]) -> list[re.Pattern]:
+    """Derive regex patterns dynamically from structured MRN/UHID columns seen in the current run."""
+    skeletons: set[str] = set()
+    for raw in mrn_values:
+        s = raw.translate(_DEVA_DIGITS).strip()
+        if not s or len(s) < 5 or len(s) > 30:
+            continue
+        # Convert concrete token into a generalized shape regex: alpha runs, digit runs, separators
+        parts: list[str] = []
+        i = 0
+        while i < len(s):
+            if s[i].isalpha() and s[i].isascii():
+                j = i
+                while j < len(s) and s[j].isalpha() and s[j].isascii():
+                    j += 1
+                ln = j - i
+                parts.append(f"[A-Z]{{{max(2, ln-1)},{ln+2}}}" if s[i:j].isupper() else f"[A-Za-z]{{{ln}}}")
+                i = j
+            elif s[i].isdigit():
+                j = i
+                while j < len(s) and s[j].isdigit():
+                    j += 1
+                ln = j - i
+                parts.append(f"\\d{{{max(2, ln-1)},{ln+2}}}" if ln >= 3 else f"\\d{{{ln}}}")
+                i = j
+            elif s[i] in "-/_":
+                parts.append(re.escape(s[i]))
+                i += 1
+            else:
+                parts = []
+                break
+        if parts and any("\\d" in p for p in parts) and any("[A-Z" in p for p in parts):
+            skeletons.add(r"\b" + "".join(parts) + r"\b")
+    return [re.compile(pat) for pat in sorted(skeletons)]
+
+
+def detect_identifier_spans(
+    text: str,
+    extra_mrn_patterns: list[re.Pattern] | None = None,
+) -> list[Span]:
+    """Find identifier spans in `text` (handles Devanagari digits via 1:1 offset mapping)."""
+    if not text:
+        return []
+    # Keep 1:1 length parity when normalizing Devanagari digits so spans slice exact original substrings
+    norm_text, _ = to_digit_ascii_with_map(text)
+    spans: list[Span] = []
+
+    # 1. ABHA address & Email (highest specificity, never numeric-ambiguous)
+    for m in _ABHA_ADDR_RE.finditer(norm_text):
+        spans.append(Span(m.start(), m.end(), "ABHA_ADDRESS", text[m.start() : m.end()]))
+    for m in _EMAIL_RE.finditer(norm_text):
+        if not _ABHA_ADDR_RE.match(m.group(0)):
+            spans.append(Span(m.start(), m.end(), "EMAIL", text[m.start() : m.end()]))
+
+    # 2. PAN
+    for m in _PAN_RE.finditer(norm_text):
+        spans.append(Span(m.start(), m.end(), "PAN", text[m.start() : m.end()]))
+
+    # 3. Insurance IDs
+    for rx in _INSURANCE_PATTERNS:
+        for m in rx.finditer(norm_text):
+            spans.append(Span(m.start(), m.end(), "INSURANCE_ID", text[m.start() : m.end()]))
+
+    # 4. ABHA 14-digit (before 12-digit Aadhaar and 10-digit phone!)
+    for m in _ABHA_NUM_RE.finditer(norm_text):
+        if not is_clinical_numeric_context(norm_text, m.start(), m.end(), "ABHA_NUMBER"):
+            spans.append(Span(m.start(), m.end(), "ABHA_NUMBER", text[m.start() : m.end()]))
+
+    # 5. Masked Aadhaar & Full Aadhaar (12-digit)
+    for m in _AADHAAR_MASKED_RE.finditer(norm_text):
+        spans.append(Span(m.start(), m.end(), "AADHAAR_MASKED", text[m.start() : m.end()]))
+    for m in _AADHAAR_FULL_RE.finditer(norm_text):
+        # Skip if already inside an ABHA 14-digit span
+        if any(s.start <= m.start() and m.end() <= s.end for s in spans):
+            continue
+        if not is_clinical_numeric_context(norm_text, m.start(), m.end(), "AADHAAR"):
+            spans.append(Span(m.start(), m.end(), "AADHAAR", text[m.start() : m.end()]))
+
+    # 6. Phones (+91, 0-prefix, spaces, dashes, Devanagari digits, extensions, masked)
+    for rx in _PHONE_PATTERNS:
+        for m in rx.finditer(norm_text):
+            if any(s.start <= m.start() and m.end() <= s.end for s in spans):
+                continue
+            if not is_clinical_numeric_context(norm_text, m.start(), m.end(), "PHONE"):
+                spans.append(Span(m.start(), m.end(), "PHONE", text[m.start() : m.end()]))
+    for m in _LABELED_PHONE_RE.finditer(norm_text):
+        s0, e0 = m.start(1), m.end(1)
+        if not any(s.start <= s0 and e0 <= s.end for s in spans):
+            spans.append(Span(s0, e0, "PHONE", text[s0:e0]))
+
+    # 7. MRN / UHID / IPD (built-in + corpus-derived + labeled)
+    for rx in _MRN_PATTERNS + (extra_mrn_patterns or []):
+        for m in rx.finditer(norm_text):
+            val = m.group(0)
+            if val.startswith(_MRN_PREFIX_EXCLUDE):
+                continue
+            if any(s.start <= m.start() and m.end() <= s.end for s in spans):
+                continue
+            # Avoid matching insurance IDs as MRN
+            if any(irx.match(val) for irx in _INSURANCE_PATTERNS):
+                continue
+            spans.append(Span(m.start(), m.end(), "MRN", text[m.start() : m.end()]))
+    for m in _LABELED_MRN_RE.finditer(norm_text):
+        s0, e0 = m.start(1), m.end(1)
+        if not any(s.start <= s0 and e0 <= s.end for s in spans):
+            spans.append(Span(s0, e0, "MRN", text[s0:e0]))
+
+    # 8. Labeled DOB & Address PIN
+    for m in _DOB_LINE_RE.finditer(norm_text):
+        spans.append(Span(m.start(1), m.end(1), "DOB", text[m.start(1) : m.end(1)]))
+    for m in _PIN_CONTEXT_RE.finditer(norm_text):
+        s0, e0 = m.start(1), m.end(1)
+        if not is_clinical_numeric_context(norm_text, s0, e0, "PIN"):
+            spans.append(Span(s0, e0, "PIN", text[s0:e0]))
+
+    return resolve_overlaps(spans)
+
+
+def resolve_overlaps(spans: list[Span]) -> list[Span]:
+    """Resolve overlapping spans deterministically: longer/earlier wins."""
+    if not spans:
+        return []
+    ordered = sorted(spans, key=lambda sp: (sp.start, -(sp.end - sp.start), sp.label))
+    kept: list[Span] = []
+    last_end = -1
+    for sp in ordered:
+        if sp.start >= last_end:
+            kept.append(sp)
+            last_end = sp.end
+    return kept
+
+
+def redact_spans(text: str, spans: list[Span], stats: dict[str, int] | None = None) -> str:
+    """Replace non-overlapping spans in original text from right to left."""
+    if not spans:
+        return text
+    ordered = sorted(spans, key=lambda sp: sp.start)
+    parts: list[str] = []
+    cur = 0
+    for sp in ordered:
+        if sp.start < cur:
+            continue
+        parts.append(text[cur : sp.start])
+        parts.append(f"[{sp.label}]")
+        if stats is not None:
+            stats[sp.label] = stats.get(sp.label, 0) + 1
+        cur = sp.end
+    parts.append(text[cur:])
+    return "".join(parts)
