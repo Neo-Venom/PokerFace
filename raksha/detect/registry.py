@@ -46,6 +46,8 @@ class AliasRegistry:
         self.first_names: dict[str, tuple[str, str]] = {}        # lowercase/phonetic single given name -> (label, role)
         self.id_cores: dict[str, str] = {}                       # normalized alnum core -> label (MRN / PHONE / AADHAAR)
         self.villages: set[str] = set()
+        self._id_core_re: re.Pattern | None = None
+        self._id_core_re_dirty: bool = False
 
     def add_doctor(self, raw_name: str) -> None:
         s = re.sub(r"(?i)^\s*(?:dr\.?|डॉ\.?|डॉक्टर)\s*", "", raw_name).strip(" .,")
@@ -118,6 +120,7 @@ class AliasRegistry:
             digits = re.sub(r"\D", "", s)
             if len(digits) >= 10:
                 self.id_cores[digits[-10:]] = "PHONE"
+                self._id_core_re_dirty = True
         elif label == "MRN":
             if len(s) >= 5:
                 self.id_cores[s.casefold()] = "MRN"
@@ -125,6 +128,7 @@ class AliasRegistry:
                 compact = re.sub(r"[^a-z0-9]", "", s.casefold())
                 if len(compact) >= 6:
                     self.id_cores[compact] = "MRN"
+                self._id_core_re_dirty = True
 
     def add_village(self, raw_val: str) -> None:
         s = raw_val.strip(" .,-")
@@ -205,12 +209,21 @@ class AliasRegistry:
                     if oe_ > os_:
                         spans.append(Span(os_, oe_, hit[0], text[os_:oe_], source="registry"))
 
-        # 3. Registered MRN / Phone cores (case-insensitive, catches lowercase filenames like adm000161)
-        for core, lbl in self.id_cores.items():
-            if len(core) < 5:
-                continue
-            rx = re.compile(rf"(?<![A-Za-z0-9]){re.escape(core)}(?![A-Za-z0-9])", re.I)
-            for m in rx.finditer(clean):
+        # 3. Registered MRN / Phone cores (precompiled once per registry; catches lowercase filenames like adm000161)
+        if self._id_core_re_dirty:
+            cores = sorted((c for c in self.id_cores if len(c) >= 5), key=lambda x: (-len(x), x))
+            if cores:
+                self._id_core_re = re.compile(
+                    rf"(?<![A-Za-z0-9])(?:{'|'.join(re.escape(c) for c in cores)})(?![A-Za-z0-9])",
+                    re.I,
+                )
+            else:
+                self._id_core_re = None
+            self._id_core_re_dirty = False
+
+        if self._id_core_re is not None:
+            for m in self._id_core_re.finditer(clean):
+                lbl = self.id_cores.get(m.group(0).casefold(), "MRN")
                 os_, oe_ = nv.map_clean_span(m.start(), m.end())
                 if oe_ > os_:
                     spans.append(Span(os_, oe_, lbl, text[os_:oe_], source="registry"))

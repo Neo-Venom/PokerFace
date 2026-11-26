@@ -1,10 +1,11 @@
-"""Evaluate main.py against a generated unseen dataset (leaks, medical retention, determinism, secret isolation)."""
+"""Evaluate main.py against a generated unseen dataset (leaks, medical retention, linking, determinism, secret isolation)."""
 from __future__ import annotations
 
 import argparse
 import base64
 import binascii
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import unicodedata
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 _B64 = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
@@ -44,6 +45,18 @@ def _tree_digest(out: Path) -> str:
             if f.is_file():
                 h.update(f.relative_to(out).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
     return h.hexdigest()
+
+
+def _record_for(loc: str, recs: dict[str, str | None]) -> str | None:
+    if loc in recs:
+        return recs[loc]
+    if loc.startswith("/"):
+        parts = loc.split("/")
+        for i in range(len(parts) - 1, 1, -1):
+            anc = "/".join(parts[:i])
+            if anc in recs:
+                return recs[anc]
+    return recs.get("doc")
 
 
 def _run_pipeline(repo: Path, inp: Path, out: Path, secret: str) -> subprocess.CompletedProcess:
@@ -90,10 +103,17 @@ def main() -> int:
     renamed = {e.get("input_sha256"): e.get("output") for e in report.get("files") or []}
     reasons = Counter(e.get("reason") for e in report.get("files") or [] if e.get("status") != "sanitized")
 
+    recs = defaultdict(dict)
+    for line in (out_a / "records.jsonl").read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            r = json.loads(line)
+            recs[str(r["file"]).replace("sanitized/", "", 1)][r["loc"]] = r.get("patient")
+
     leaks, kept = Counter(), Counter()
     by_script, tot_script = Counter(), Counter()
     by_channel, tot_channel = Counter(), Counter()
     pres_ok = pres_all = 0
+    unit_patient: dict[tuple[str, str], tuple[str, str | None]] = {}
     examples = []
 
     san = out_a / "sanitized"
@@ -104,7 +124,7 @@ def main() -> int:
         exists = p.is_file()
         text = _norm(_read_with_b64(p)) if exists else ""
         fname = _norm(out_rel)
-        for _loc, u in f["units"].items():
+        for loc, u in f["units"].items():
             for e in u.get("entities", []):
                 if e["type"] == "CANARY":
                     continue
@@ -124,6 +144,8 @@ def main() -> int:
                 for pv in u.get("preserve", []):
                     pres_all += 1
                     pres_ok += _norm(pv["text"]) in text
+            if u.get("link") == "required" and u.get("patient"):
+                unit_patient[(rel, loc)] = (u["patient"], _record_for(loc, recs.get(out_rel, {})))
 
     all_out_txt = _norm(
         "\n".join(
@@ -132,23 +154,47 @@ def main() -> int:
     )
     canary_hits = [c for c in truth.get("canaries", []) if _norm(c) in all_out_txt]
 
+    # Pairwise linking metrics (same formula as check_dev.py)
+    units = list(unit_patient.values())
+    by_true = defaultdict(list)
+    yours = defaultdict(list)
+    for idx, (t_pt, y_psn) in enumerate(units):
+        by_true[t_pt].append(idx)
+        if y_psn:
+            yours[y_psn].append(idx)
+    true_pairs = sum(len(v) * (len(v) - 1) // 2 for v in by_true.values())
+    tp = fp = 0
+    for members in yours.values():
+        for i, j in itertools.combinations(members, 2):
+            if units[i][0] == units[j][0]:
+                tp += 1
+            else:
+                fp += 1
+    fn = true_pairs - tp
+    l_prec = tp / (tp + fp) if (tp + fp) else 0.0
+    l_rec = tp / (tp + fn) if (tp + fn) else 0.0
+    l_f05 = (1.25 * l_prec * l_rec / (0.25 * l_prec + l_rec)) if (l_prec + l_rec) else 0.0
+    wrong_merges = sum(1 for m in yours.values() if len({units[i][0] for i in m}) > 1)
+
     tot_ent = sum(leaks.values()) + sum(kept.values())
-    print("=" * 64)
+    print("=" * 68)
     print(" UNSEEN DATASET ROBUSTNESS EVALUATION")
-    print("=" * 64)
+    print("=" * 68)
+    print(f"Report counts                   : {report.get('counts')}")
     print(f"Determinism (same secret A == B): {det_same}")
-    print(f"Different secret output differs : {diff_secret_diff} (note: M1 has null pseudonyms/no date shifts yet)")
+    print(f"Different secret output differs : {diff_secret_diff}")
     print(f"Quarantined reasons             : {dict(reasons)}")
-    print(f"PII leaked                      : {sum(leaks.values())} / {tot_ent} ({100 * sum(leaks.values()) / max(1, tot_ent):.1f}%)")
+    print(f"PII leaked                      : {sum(leaks.values())} / {tot_ent} ({100 * sum(leaks.values()) / max(1, tot_ent):.2f}%)")
     for t in sorted(set(leaks) | set(kept), key=lambda k: -leaks[k]):
         n = leaks[t] + kept[t]
-        print(f"  {t:<16} {leaks[t]:>3} / {n:<3} ({100 * leaks[t] / n:5.1f}%)")
-    print("By script :", ", ".join(f"{s} {100 * by_script[s] / max(1, tot_script[s]):.1f}%" for s in tot_script))
-    print("By channel:", ", ".join(f"{c} {100 * by_channel[c] / max(1, tot_channel[c]):.1f}%" for c in tot_channel))
-    print(f"Canaries leaked                 : {len(canary_hits)} / {len(truth.get('canaries', []))} {canary_hits}")
-    print(f"Medical values kept             : {pres_ok} / {pres_all} ({100 * pres_ok / max(1, pres_all):.1f}%)")
+        print(f"  {t:<16} {leaks[t]:>4} / {n:<4} ({100 * leaks[t] / n:5.2f}%)")
+    print("By script :", ", ".join(f"{s} {100 * by_script[s] / max(1, tot_script[s]):.2f}%" for s in tot_script))
+    print("By channel:", ", ".join(f"{c} {100 * by_channel[c] / max(1, tot_channel[c]):.2f}%" for c in tot_channel))
+    print(f"Canaries leaked                 : {len(canary_hits)} / {len(truth.get('canaries', []))} {canary_hits[:5]}")
+    print(f"Medical values kept             : {pres_ok} / {pres_all} ({100 * pres_ok / max(1, pres_all):.2f}%)")
+    print(f"Patient linking                 : precision {l_prec:.4f}, recall {l_rec:.4f}, F0.5 {l_f05:.4f} (wrong merges: {wrong_merges}, linkable units: {len(units)})")
     if examples:
-        print("Leak examples:")
+        print("Leak examples (first 15):")
         for ex in examples[:15]:
             print(" ", " | ".join(ex))
     return 0

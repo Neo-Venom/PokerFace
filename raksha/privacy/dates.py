@@ -96,7 +96,7 @@ def infer_month_first(samples: list[str], header_or_rel_hint: str = "") -> bool:
                 return True
             if 0 < d_span <= 60 and m_span > 90:
                 return False
-    return any(tok in hl for tok in ("arogya_legacy", "rx_arogya", "arogya_ds"))
+    return False
 
 
 def _format_weekday_like(sample_wd: str, d: dt.date) -> str:

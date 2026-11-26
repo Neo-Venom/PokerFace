@@ -12,7 +12,7 @@ from raksha.identity.linker import ClusterResult
 from raksha.privacy.dates import keyed_shift_days
 
 _DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
-_NON_PATIENT_PATH_TOKS = ("clean/", "readme_export", "ward_census", "drug_formulary", "lab_reference_ranges", "ambulance_log")
+_NON_PATIENT_PATH_TOKS = ("clean/",)
 
 # Empirical UP rural/district population pyramid relative probability per single year of age (sums ~ 1.0 over 0..100)
 def _year_density(age: int) -> float:
@@ -266,6 +266,13 @@ def assess_privacy_risks(
             continue
         rec_units: list[tuple[str, object]] = []
         if fmt in ("csv", "tsv") and isinstance(payload, list) and len(payload) > 1:
+            hdr_c, cts_c = col_cache.get(rel, ([], []))
+            hdr_low = {str(h).strip().casefold() for h in hdr_c}
+            has_qi_or_pt = any(
+                ct in ("PATIENT_NAME", "AADHAAR", "ABHA_NUMBER", "PHONE", "DOB") for ct in cts_c
+            ) or bool(hdr_low & {"age", "umar", "age_sex", "district", "jila", "tehsil", "admission_date", "discharge_date", "visit_date", "collected_on", "reg date", "registration date", "uhid", "patient_name"})
+            if not has_qi_or_pt:
+                continue
             rec_units = [(f"row:{i}", row) for i, row in enumerate(payload[1:])]
         elif fmt == "json":
             rec_units = get_json_record_units(payload)
@@ -275,6 +282,9 @@ def assess_privacy_risks(
         hdr, cts = col_cache.get(rel, (None, None))
         for loc, sub_obj in rec_units:
             ev = ev_by_key.get((rel, loc))
+            ds, ts, cs = _extract_geo_and_cond_for_record(rel, fmt, sub_obj, col_types=cts, header=hdr)
+            if fmt == "txt" and ev is None and not ds and not ts and not cs:
+                continue
             psn = rec_to_psn.get((rel, loc))
             if psn:
                 pkey = psn
@@ -300,7 +310,6 @@ def assess_privacy_risks(
                     prof.ages.append(ea)
                 if ev.sex:
                     prof.genders.add(ev.sex)
-            ds, ts, cs = _extract_geo_and_cond_for_record(rel, fmt, sub_obj, col_types=cts, header=hdr)
             prof.districts.update(ds)
             prof.tehsils.update(ts)
             prof.conditions.update(cs)

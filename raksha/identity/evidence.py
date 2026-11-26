@@ -42,7 +42,7 @@ _PREFIXED_MRN_RE = re.compile(r"^(?:[A-Z]{2,6}/\d{2,4}/\d{3,}|[A-Z]{2,6}-\d{4,}|
 # Generic non-scoped prefixes (IPD-2026-00432, IP/26/00130, ADM000162, UHID-010610 etc.)
 _GENERIC_PREFIX_WORDS = {"UHID", "MRN", "IPD", "IP", "ADM", "PAT", "REG", "OPD"}
 
-_NON_PATIENT_FILES = {"clean/", "readme_export", "ward_census", "drug_formulary", "lab_reference_ranges"}
+_NON_PATIENT_FILES = {"clean/"}
 
 
 @dataclass(frozen=True)
@@ -103,14 +103,49 @@ def _canon_hospital(raw: str) -> str:
     return "_".join(toks[:3]) if toks else s.replace(" ", "_")
 
 
-def _infer_hospital_from_rel(rel: str) -> str:
+def _infer_hospital_from_rel(rel: str, acronym_map: dict[str, str] | None = None) -> str:
     stem = rel.rsplit("/", 1)[-1].casefold()
     m = re.match(r"^(?:rx_|[a-z]+_ds_)?([a-z]+?)_(?:registration|patients|claims|opd|ds|results|legacy)", stem)
     if m:
-        return _canon_hospital(m.group(1))
-    if stem.startswith("dhh"):
-        return _canon_hospital("district hospital hardoi")
+        tok = m.group(1)
+        if acronym_map and tok in acronym_map:
+            return acronym_map[tok]
+        return _canon_hospital(tok)
     return ""
+
+
+def _build_hospital_acronym_map(parsed_items: list[tuple[str, str, Any]]) -> dict[str, str]:
+    """Build hospital stem/acronym -> canonical hospital key purely from corpus headers/metadata."""
+    raw_names: set[str] = set()
+    for _rel, fmt, payload in parsed_items:
+        if fmt == "json" and isinstance(payload, dict):
+            if isinstance(payload.get("_export_meta"), dict) and isinstance(payload["_export_meta"].get("hospital"), str):
+                raw_names.add(payload["_export_meta"]["hospital"])
+            if isinstance(payload.get("facility"), dict) and isinstance(payload["facility"].get("name"), str):
+                raw_names.add(payload["facility"]["name"])
+            if _is_fhir_bundle(payload):
+                for ent in payload.get("entry", []):
+                    res = ent.get("resource", {}) if isinstance(ent, dict) else {}
+                    if res.get("resourceType") == "Organization" and isinstance(res.get("name"), str):
+                        raw_names.add(res["name"])
+        elif fmt == "txt" and isinstance(payload, str) and payload.strip():
+            first_line = payload.splitlines()[0].strip()
+            if any(w in first_line.casefold() for w in ("hospital", "sadan", "clinic", "trust", "institute", "medical")):
+                raw_names.add(re.split(r"\s*[-–,]\s*(?:OPD|ओपीडी|Diagnostic)", first_line)[0])
+
+    acr: dict[str, str] = {}
+    for rn in sorted(raw_names):
+        words = [w for w in re.findall(r"[a-z]+", rn.casefold()) if w]
+        canon = _canon_hospital(rn)
+        if len(words) >= 2 and canon:
+            initials = "".join(w[0] for w in words)
+            if len(initials) >= 2:
+                acr.setdefault(initials, canon)
+            # Also handle initial + last word pattern (e.g., first letters + last token: "dh" + "hardoi")
+            if len(words) >= 3:
+                acr.setdefault("".join(w[0] for w in words[:-1]) + words[-1], canon)
+            acr.setdefault(words[-1], canon)
+    return acr
 
 
 def _fold_text_tokens(raw: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -450,12 +485,15 @@ def get_json_record_units(data: Any) -> list[tuple[str, Any]]:
 
 def extract_all_evidences(parsed_items: list[tuple[str, str, Any]]) -> list[RecordEvidence]:
     """Extract RecordEvidence objects across all parsed input files in deterministic order."""
+    from raksha.privacy.dates import infer_month_first
+
     evidences: list[RecordEvidence] = []
+    acronym_map = _build_hospital_acronym_map(parsed_items)
 
     for rel, fmt, payload in parsed_items:
         if _is_non_patient_path(rel):
             continue
-        base_hosp = _infer_hospital_from_rel(rel)
+        base_hosp = _infer_hospital_from_rel(rel, acronym_map=acronym_map)
 
         if fmt in ("csv", "tsv") and isinstance(payload, list) and len(payload) > 1:
             header, body = payload[0], payload[1:]
@@ -657,7 +695,7 @@ def extract_all_evidences(parsed_items: list[tuple[str, str, Any]]) -> list[Reco
 
         elif fmt == "txt" and isinstance(payload, str):
             ev = RecordEvidence(rel=rel, loc="doc", content_hash=_record_hash(payload), hospital=base_hosp)
-            month_first = "arogya" in rel.casefold()
+            month_first = infer_month_first([payload], header_or_rel_hint=rel)
             _extract_free_text_clues(ev, payload, month_first_hint=month_first)
             if ev.names:
                 ev.is_fragmentary = all(n.is_fragment_first_only for n in ev.names) and not ev.has_strong_id

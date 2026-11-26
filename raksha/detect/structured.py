@@ -58,7 +58,7 @@ _NON_PII_KEY_TOKENS = {
     "form", "schedule", "category", "test", "loinc", "unit", "range", "ref_range",
     "reference_range", "result", "results", "value", "values", "diagnosis", "diagnoses",
     "complaints", "complaint", "history", "procedure", "package_code", "icd", "code",
-    "department", "ward", "wards", "bed", "beds", "occupied", "dengue_cases", "week",
+    "department", "ward", "wards", "bed", "beds", "occupied", "cases", "case_count", "week",
     "status", "amount", "amount_inr", "doctor", "ref_doctor", "referred_by", "consultant",
     "practitioner", "author", "hospital", "facility", "system", "exported_by", "schema",
     "report_type", "lab", "resourcetype", "gender", "sex", "ling", "age", "umar",

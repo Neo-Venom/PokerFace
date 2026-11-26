@@ -220,7 +220,7 @@ def apply_privacy_to_tabular(
                     row[ci] = shifted
                     row_changed = True
             elif hk in ("notes", "remarks", "comment", "address", "pata", "street") or "[HOUSE]" in sval or "[VILLAGE]" in sval:
-                g_txt, c_t = generalize_text(sval, plan, month_first=("arogya" in rel.casefold()))
+                g_txt, c_t = generalize_text(sval, plan, month_first=infer_month_first([sval], header_or_rel_hint=rel))
                 if c_t:
                     row[ci] = g_txt
                     row_changed = True
