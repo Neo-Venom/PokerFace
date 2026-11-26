@@ -96,7 +96,7 @@ _INSURANCE_PATTERNS = [
 _MRN_PATTERNS = [
     re.compile(r"\b[A-Z]{2,6}/\d{2,4}/\d{3,}\b"),          # e.g. HOSP/26/001234
     re.compile(r"\b[A-Z]{2,6}-\d{4,}\b"),                  # e.g. HOSP-0012345
-    re.compile(r"\b[A-Z]{2,6}\d{4}-\d{3,}\b"),             # e.g. HOSP2026-001234
+    re.compile(r"\b[A-Z]{2,6}\d{2,4}-\d{3,}\b"),             # e.g. HOSP2026-001234 / NVP27-110421
     re.compile(r"\b[A-Z]{2,6}-[A-Z]{2,4}-\d{3,}\b"),       # e.g. HOSP-IPD-00123
     re.compile(r"\b[A-Z]{2,5}-\d{2,4}-\d{3,}\b"),          # e.g. IPD-2026-00123
     re.compile(r"\b[A-Z]{2,5}\d{5,}\b"),                   # e.g. ADM000123

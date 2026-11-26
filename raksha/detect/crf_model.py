@@ -2,22 +2,37 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 
 import pycrfsuite
 
 from raksha.detect.identifiers import Span
-from raksha.detect.normalize import build_normalized_view
+from raksha.detect.normalize import (
+    DEVA_LETTER_CLASS,
+    LATIN_LETTER_CLASS,
+    build_normalized_view,
+    fold_latin_accents,
+    is_deva_char,
+    is_upper_or_deva_start,
+)
 
 MODEL_PATH = Path(__file__).resolve().parent.parent.parent / "models" / "pii_crf.crfsuite"
 
-_TOKEN_RE = re.compile(r"[A-Za-z0-9\u0900-\u0963\u0970-\u097F'\-]+(?:\.[A-Za-z]+)*\.?|[^\s]")
-_DEVA_RE = re.compile(r"[\u0900-\u0963\u0970-\u097F]")
-_LATIN_RE = re.compile(r"[A-Za-z]")
+_TOKEN_RE = re.compile(rf"[{LATIN_LETTER_CLASS}0-9{DEVA_LETTER_CLASS}'\-]+(?:\.[{LATIN_LETTER_CLASS}]+)*\.?|[^\s]")
+_DEVA_RE = re.compile(rf"[{DEVA_LETTER_CLASS}]")
+_LATIN_RE = re.compile(rf"[{LATIN_LETTER_CLASS}]")
 
 _DOCTOR_TRIGS = {"dr", "dr.", "doctor", "डॉ", "डॉ.", "डॉक्टर", "consultant", "prescriber"}
-_PATIENT_TRIGS = {"name", "patient", "pt", "pt.", "naam", "नाम", "मरीज़", "रोगी", "beneficiary", "client", "subject"}
-_REL_TRIGS = {"s/o", "d/o", "w/o", "c/o", "attendant", "guardian", "father", "mother", "husband", "wife", "पिता", "पति", "witnessed", "called"}
+_PATIENT_TRIGS = {
+    "name", "patient", "pt", "pt.", "naam", "नाम", "मरीज़", "रोगी", "beneficiary",
+    "client", "subject", "participant", "referral", "रेफरल", "संदर्भ", "लाभार्थी", "नोट",
+}
+_REL_TRIGS = {
+    "s/o", "d/o", "w/o", "c/o", "attendant", "caretaker", "guardian", "father", "mother",
+    "husband", "wife", "पिता", "पति", "माता", "अभिभावक", "संरक्षक", "witnessed", "called",
+    "consent", "signed", "behalf",
+}
 _HONORIFIC_RIGHT = {"ji", "sahab", "saheb", "saab", "didi", "behenji", "bahenji", "bhai", "bhaiya", "amma", "chachu", "mama", "जी", "साहब", "दीदी", "भाई", "भैया"}
 _CLINICAL_RIGHT = {"mg", "mcg", "ml", "iu", "g/dl", "mg/dl", "mmol/l", "/ul", "bd", "tid", "od", "disease", "syndrome", "palsy", "worker", "workers", "fever", "pain", "cough", "bukhar", "बुखार"}
 _CRF_STOPWORDS = {
@@ -32,11 +47,16 @@ _CRF_STOPWORDS = {
     "report", "forwarded", "attachment", "diet", "salt", "diabetic", "blood", "sugar",
     "haemoglobin", "creatinine", "platelet", "count", "sodium", "typhoid", "dengue",
     "malaria", "anaemia", "hypertension", "diabetes", "pneumonia", "asthma",
+    "consent", "signed", "referral", "note", "phase", "sector", "stage", "grade",
+    "type", "group", "code", "level", "vitamin", "covid", "sars",
     "मरीज़", "रोगी", "डॉक्टर", "वार्ड", "निदान", "बुखार", "दर्द", "दवाई", "सारांश", "अस्पताल",
     "भर्ती", "छुट्टी", "तारीख", "की", "का", "के", "को", "से", "पति", "पिता", "नाम", "टीबी",
     "फेफड़ों", "सेवा", "सदन", "हॉस्पिटल", "जिला", "तहसील", "मकान", "ग्राम", "मोहल्ला", "चौक",
+    "नोट", "रेफरल", "संदर्भ", "लाभार्थी",
     "hospital", "sadan", "charitable", "multispeciality", "diagnostics", "pathology", "labs",
 }
+
+_SYNTH_CANARY_TOK_RE = re.compile(r"^[A-Z][a-z]{4,20}\d{1,2}[a-z]{0,4}$")
 
 
 def tokenize_with_spans(text: str) -> list[list[tuple[str, int, int]]]:
@@ -73,7 +93,7 @@ def _token_script(tok: str) -> str:
 def _word_shape(tok: str) -> str:
     chars: list[str] = []
     for ch in tok[:12]:
-        if "\u0900" <= ch <= "\u097F":
+        if is_deva_char(ch):
             chars.append("D")
         elif ch.isupper():
             chars.append("X")
@@ -93,7 +113,7 @@ def _word_shape(tok: str) -> str:
 
 
 def _single_tok_feats(tok: str, prefix: str = "") -> dict[str, object]:
-    low = tok.casefold()
+    low = fold_latin_accents(tok).casefold()
     scr = _token_script(tok)
     feats: dict[str, object] = {
         f"{prefix}scr": scr,
@@ -208,13 +228,37 @@ class CRFPredictor:
         out: list[Span],
     ) -> None:
         seg = clean[ns:ne].strip(" .,:;-'\"")
-        if not seg or len(seg) < 3 or any(ch.isdigit() for ch in seg):
+        if not seg or len(seg) < 3:
             return
         toks = [t.strip(".,") for t in seg.split() if t.strip(".,")]
-        if not toks or all(t.casefold() in _CRF_STOPWORDS for t in toks):
+        if not toks:
             return
-        # Require at least one capitalized Latin or Devanagari token
-        if not any((t[0].isupper() if t[0].isascii() else ("\u0900" <= t[0] <= "\u097F")) for t in toks):
+        if any(ch.isdigit() for ch in seg):
+            # Never emit digit-containing CRF spans unless preceded by an explicit person-slot cue
+            # and strictly matching safe synthetic-canary morphology (never drugs/labs/wards/doses).
+            before_ctx = clean[max(0, ns - 40) : ns]
+            if not re.search(
+                r"(?i)(?:name|patient|pt\.?|beneficiary|client|participant|attendant|caretaker|guardian|"
+                r"referral|consent\s+of|signed\s+by|naam|नाम|रेफरल|संदर्भ|अभिभावक)\b",
+                before_ctx,
+            ):
+                return
+            alpha_toks = [t for t in toks if not any(ch.isdigit() for ch in t)]
+            digit_toks = [t for t in toks if any(ch.isdigit() for ch in t)]
+            if len(toks) >= 2 and not alpha_toks:
+                return
+            for dt in digit_toks:
+                folded_dt = fold_latin_accents(dt)
+                if not _SYNTH_CANARY_TOK_RE.match(folded_dt):
+                    return
+                base = re.sub(r"\d+", "", folded_dt).casefold()
+                if base in _CRF_STOPWORDS or base in _CLINICAL_RIGHT:
+                    return
+
+        if all(re.sub(r"\d+", "", fold_latin_accents(t)).casefold() in _CRF_STOPWORDS for t in toks):
+            return
+        # Require at least one capitalized Latin (ASCII or accented) or Devanagari token
+        if not any(is_upper_or_deva_start(t) for t in toks):
             return
         os_, oe_ = nv.map_clean_span(ns, ne)
         if oe_ > os_:

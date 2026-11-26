@@ -9,11 +9,28 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
-from raksha.detect.normalize import build_normalized_view, deva_word_to_latin, phonetic_key
-from raksha.detect.structured import _is_fhir_bundle, infer_column_type
+from raksha.detect.normalize import (
+    DEVA_LETTER_CLASS,
+    LATIN_LETTER_CLASS,
+    LATIN_UPPER_CLASS,
+    build_normalized_view,
+    deva_word_to_latin,
+    fold_latin_accents,
+    phonetic_key,
+)
+from raksha.detect.structured import (
+    _is_fhir_bundle,
+    classify_header_parts,
+    infer_dict_schema,
+    infer_table_schema,
+    is_non_patient_json_content,
+    is_non_patient_table_content,
+)
 
-_DEVA_RE = re.compile(r"[\u0900-\u0963\u0970-\u097F]")
-_DL = r"\u0900-\u0963\u0970-\u097F"
+_DL = DEVA_LETTER_CLASS
+_LU = LATIN_UPPER_CLASS
+_LL = LATIN_LETTER_CLASS
+_DEVA_RE = re.compile(rf"[{_DL}]")
 
 _RE_PHONE_10 = re.compile(r"(?<!\d)(?:\+?91[\s.\-]?|0)?([6-9]\d{4}[\s.\-]?\d{5}|[6-9]\d{2}[\s.\-]?\d{3}[\s.\-]?\d{4})(?!\d)")
 _RE_AADHAAR_12 = re.compile(r"(?<!\d)(\d{4}[\s\-]?\d{4}[\s\-]?\d{4})(?!\d)")
@@ -27,7 +44,7 @@ _RE_MRN_FREE = re.compile(
     r"\b("
     r"[A-Z]{2,6}/\d{2,4}/\d{3,}"
     r"|[A-Z]{2,6}-\d{4,}"
-    r"|[A-Z]{2,6}\d{4}-\d{3,}"
+    r"|[A-Z]{2,6}\d{2,4}-\d{3,}"
     r"|[A-Z]{2,6}-[A-Z]{2,4}-\d{3,}"
     r"|[A-Z]{2,5}-\d{2,4}-\d{3,}"
     r"|[A-Z]{2,5}\d{5,}"
@@ -38,11 +55,9 @@ _RE_MRN_LABELED = re.compile(
 )
 
 # Hospital-prefixed UHIDs that uniquely carry their own hospital scope across external labs/billing
-_PREFIXED_MRN_RE = re.compile(r"^(?:[A-Z]{2,6}/\d{2,4}/\d{3,}|[A-Z]{2,6}-\d{4,}|[A-Z]{2,6}\d{4}-\d{3,})$")
+_PREFIXED_MRN_RE = re.compile(r"^(?:[A-Z]{2,6}/\d{2,4}/\d{3,}|[A-Z]{2,6}-\d{4,}|[A-Z]{2,6}\d{2,4}-\d{3,}|[A-Z]{2,6}-[A-Z]{2,4}-\d{3,})$")
 # Generic non-scoped prefixes (IPD-2026-00432, IP/26/00130, ADM000162, UHID-010610 etc.)
 _GENERIC_PREFIX_WORDS = {"UHID", "MRN", "IPD", "IP", "ADM", "PAT", "REG", "OPD"}
-
-_NON_PATIENT_FILES = {"clean/"}
 
 
 @dataclass(frozen=True)
@@ -150,7 +165,7 @@ def _build_hospital_acronym_map(parsed_items: list[tuple[str, str, Any]]) -> dic
 
 def _fold_text_tokens(raw: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     s = unicodedata.normalize("NFC", raw)
-    s = re.sub(r"[^\w\s.\u0900-\u097F'-]", " ", s)
+    s = re.sub(rf"[^\w\s.{_DL}'\-]", " ", s)
     toks: list[str] = []
     ptoks: list[str] = []
     for part in s.split():
@@ -160,7 +175,7 @@ def _fold_text_tokens(raw: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         if _DEVA_RE.search(p):
             lat = deva_word_to_latin(p)
         else:
-            lat = p.casefold()
+            lat = fold_latin_accents(p).casefold()
         lat = re.sub(r"[^a-z0-9]", "", lat)
         if not lat:
             continue
@@ -171,7 +186,8 @@ def _fold_text_tokens(raw: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 
 def make_name_form(raw: str, is_fragment: bool = False) -> NameForm | None:
-    s = re.sub(r"(?i)^\s*(?:mr\.?|mrs\.?|ms\.?|smt\.?|shri|श्री|श्रीमती|pt\.?)\s+", "", raw.strip())
+    s = unicodedata.normalize("NFC", raw.strip())
+    s = re.sub(r"(?i)^\s*(?:mr\.?|mrs\.?|ms\.?|smt\.?|shri|श्री|श्रीमती|pt\.?)\s+", "", s)
     s = re.sub(r"(?i)\s+(?:ji|sahab|saheb|saab|didi|behenji|bahenji|bhai|bhaiya|amma|जी|साहब|दीदी)\s*$", "", s).strip()
     if not s or any(ch.isdigit() for ch in s):
         return None
@@ -266,8 +282,8 @@ def _add_mrn(ev: RecordEvidence, raw_mrn: str) -> None:
         return
     canon = s.upper()
     ev.scoped_mrns.add((ev.hospital or "unknown", canon))
-    # Extract alphabetic prefix to decide if MRN is hospital-self-scoped
-    m_pre = re.match(r"^([A-Z]{2,6})(?:[-/]|\d{4}-)", canon)
+    # Extract alphabetic hospital prefix (with optional 2- or 4-digit year suffix) to scope cross-hospital IDs
+    m_pre = re.match(r"^([A-Z]{2,6})(?:[-/]|\d{2,4}[-/])", canon)
     if m_pre and m_pre.group(1) not in _GENERIC_PREFIX_WORDS:
         ev.global_mrns.add(canon)
     ev.has_strong_id = True
@@ -301,12 +317,12 @@ def _add_village(ev: RecordEvidence, raw_vill: str) -> None:
 def _extract_address_clues(ev: RecordEvidence, addr: str) -> None:
     nv = build_normalized_view(addr)
     c = nv.clean
-    m_co = re.search(r"(?i)\bC/O\s+([A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+(?:\s+[A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+){0,3})(?=,|$)", c)
+    m_co = re.search(rf"(?i)\bC/O\s+([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+[{_LU}{_DL}][{_LL}{_DL}.'\-]+){{0,3}})(?=,|$)", c)
     if m_co:
         _add_relative(ev, "C/O", m_co.group(1))
     for m_v in re.finditer(r"(?i)(?:\bVill\.?|\bVillage|\bGram|ग्राम)\s+([^,\n\-]+)", c):
         _add_village(ev, m_v.group(1))
-    m_tehsil_vill = re.search(r"(?i)(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Ward|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([A-Z" + _DL + r"][^\n,]+?)(?=,\s*(?:Tehsil|तहसील)\b)", c)
+    m_tehsil_vill = re.search(rf"(?i)(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Qtr|Flat|Ward|Sector|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([{_LU}{_DL}][^\n,]+?)(?=,\s*(?:Tehsil|तहसील)\b)", c)
     if m_tehsil_vill:
         _add_village(ev, m_tehsil_vill.group(1))
     m_pin = re.search(r"(?<!\d)([1-8]\d{5})(?!\d)", c)
@@ -382,20 +398,20 @@ def _extract_free_text_clues(ev: RecordEvidence, text: str, month_first_hint: bo
         if nf:
             ev.names.append(nf)
 
-    # Fragment / inline patient names
-    for m in re.finditer(r"(?i)\bReport\s+of\s+([A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+(?:\s+(?!\d)[A-Za-z" + _DL + r".'\-]+){0,2})(?=\s+\d{1,3}|\s|$)", c):
+    # Fragment / inline patient names (Unicode accented Latin & Devanagari aware)
+    for m in re.finditer(rf"(?i)\bReport\s+of\s+([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+(?!\d)[{_LL}{_DL}.'\-]+){{0,2}})(?=\s+\d{{1,3}}|\s|$)", c):
         nf = make_name_form(m.group(1), is_fragment=True)
         if nf:
             ev.names.append(nf)
-    for m in re.finditer(r"(?:^|\n)\s*([A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+(?:\s+[A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+){0,2})\s*,\s*(?=[SDWC]/[Oo]\b)", c):
+    for m in re.finditer(rf"(?:^|\n)\s*([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+[{_LU}{_DL}][{_LL}{_DL}.'\-]+){{0,2}})\s*,\s*(?=[SDWC]/[Oo]\b)", c):
         nf = make_name_form(m.group(1), is_fragment=True)
         if nf:
             ev.names.append(nf)
-    for m in re.finditer(r"(?:^|\n)\s*\d{1,2}:\d{2}\s*[-–]\s*(?!Dr\.|डॉ|Patient\b|Next\b)([A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+(?:\s+[A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+){0,3})(?=\s*[-–]\s*K/C/O)", c):
+    for m in re.finditer(rf"(?:^|\n)\s*\d{{1,2}}:\d{{2}}\s*[-–]\s*(?!Dr\.|डॉ|Patient\b|Next\b)([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+[{_LU}{_DL}][{_LL}{_DL}.'\-]+){{0,3}})(?=\s*[-–]\s*K/C/O)", c):
         nf = make_name_form(m.group(1), is_fragment=False)
         if nf:
             ev.names.append(nf)
-    for m in re.finditer(r"([A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+(?:\s+[A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+){0,2})\s+(?:ji|sahab|saheb|saab|didi|behenji|bahenji|bhai|bhaiya|amma|जी|साहब|दीदी)\s+(?:ka|ki|ke)\b", c):
+    for m in re.finditer(rf"([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+[{_LU}{_DL}][{_LL}{_DL}.'\-]+){{0,2}})\s+(?:ji|sahab|saheb|saab|didi|behenji|bahenji|bhai|bhaiya|amma|जी|साहब|दीदी)\s+(?:ka|ki|ke)\b", c):
         nf = make_name_form(m.group(1), is_fragment=True)
         if nf:
             ev.names.append(nf)
@@ -407,9 +423,9 @@ def _extract_free_text_clues(ev: RecordEvidence, text: str, month_first_hint: bo
                 ev.names.append(nf)
 
     # Relatives
-    for m in re.finditer(r"(?i)\b([SDW]/[Oo])\s+([A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+(?:\s+[A-Z" + _DL + r"][A-Za-z" + _DL + r".'\-]+){0,3})(?=[,.;\)\n\r]|\s+(?:discharged|informed|Mob|Phone)\b|$)", c):
+    for m in re.finditer(rf"(?i)\b([SDW]/[Oo])\s+([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+[{_LU}{_DL}][{_LL}{_DL}.'\-]+){{0,3}})(?=[,.;\)\n\r]|\s+(?:discharged|informed|Mob|Phone)\b|$)", c):
         _add_relative(ev, m.group(1), m.group(2))
-    for m in re.finditer(r"(?i)(?:पिता\s+का\s+नाम|पति\s+का\s+नाम|माता\s+का\s+नाम|अभिभावक|Attendant|Caretaker)\s*[:\-]\s*([^\n\r,;]+)", c):
+    for m in re.finditer(r"(?i)(?:पिता\s+का\s+नाम|पति\s+का\s+नाम|माता\s+का\s+नाम|अभिभावक|संरक्षक|Attendant|Caretaker|Guardian)\s*[:\-]\s*([^\n\r,;]+)", c):
         _add_relative(ev, "", m.group(1))
 
     # Age / Sex / DOB
@@ -459,9 +475,40 @@ def _record_hash(obj: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
 
 
-def _is_non_patient_path(rel: str) -> bool:
-    low = rel.casefold()
-    return any(tok in low for tok in _NON_PATIENT_FILES)
+def is_non_patient_text_content(text: str, ev: RecordEvidence | None = None) -> bool:
+    """Content-based check: True when free text has zero patient PII and zero patient demographics/visit timelines."""
+    if not text or not text.strip():
+        return True
+    if ev is not None and (
+        ev.names or ev.has_strong_id or ev.phones or ev.relatives
+        or ev.pins or ev.villages or ev.dob or ev.age is not None or ev.sex
+    ):
+        return False
+    nv = build_normalized_view(text)
+    c = nv.clean
+    # Any demographic/visit/encounter/patient label indicates a patient document (never reference protocol)
+    if re.search(
+        r"(?i)(?:\b(?:age(?:/sex)?|dob|date\s+of\s+(?:admission|discharge|birth)|uhid|mrn|patient(?:'s)?\s+name|beneficiary|client\s+name|"
+        r"distt?\.|district|tehsil|s/o|d/o|w/o)\b|मरीज़\s+का\s+नाम|रोगी\s+का\s+नाम|भर्ती\s+की\s+तारीख|छुट्टी\s+की\s+तारीख|आयु\s*[:\-]|जिला|तहसील)",
+        c,
+    ):
+        return False
+    if re.search(r"\b\d{1,3}\s*Y\s*/\s*[MF]\b", c, re.I):
+        return False
+    if re.search(r"\b(?:19\d{2}|20\d{2})-\d{2}-\d{2}\b|\b\d{1,2}[./\-]\d{1,2}[./\-](?:19|20)\d{2}\b", c):
+        return False
+    return True
+
+
+def is_non_patient_item(rel: str, fmt: str, payload: Any, ts: Any = None, ev: RecordEvidence | None = None) -> bool:
+    """Unified content-based classifier replacing path-based 'clean/' heuristics across all formats."""
+    if fmt in ("csv", "tsv") and isinstance(payload, list) and len(payload) > 1:
+        return is_non_patient_table_content(payload[0], payload[1:], table_schema=ts)
+    if fmt == "json" and isinstance(payload, dict):
+        return is_non_patient_json_content(payload)
+    if fmt == "txt" and isinstance(payload, str):
+        return is_non_patient_text_content(payload, ev=ev)
+    return True
 
 
 def get_json_record_units(data: Any) -> list[tuple[str, Any]]:
@@ -484,36 +531,34 @@ def get_json_record_units(data: Any) -> list[tuple[str, Any]]:
 
 
 def extract_all_evidences(parsed_items: list[tuple[str, str, Any]]) -> list[RecordEvidence]:
-    """Extract RecordEvidence objects across all parsed input files in deterministic order."""
+    """Extract RecordEvidence objects across all parsed input files via unified schema inference."""
     from raksha.privacy.dates import infer_month_first
 
     evidences: list[RecordEvidence] = []
     acronym_map = _build_hospital_acronym_map(parsed_items)
 
     for rel, fmt, payload in parsed_items:
-        if _is_non_patient_path(rel):
-            continue
         base_hosp = _infer_hospital_from_rel(rel, acronym_map=acronym_map)
 
         if fmt in ("csv", "tsv") and isinstance(payload, list) and len(payload) > 1:
             header, body = payload[0], payload[1:]
-            col_types = [
-                infer_column_type([r[i] if i < len(r) else "" for r in body], header=h)
-                for i, h in enumerate(header)
-            ]
-            # If table has no patient/MRN/ID/phone columns at all, treat rows as non-patient
-            has_patient_cols = any(ct in ("PATIENT_NAME", "MRN", "AADHAAR", "ABHA_NUMBER", "PHONE") for ct in col_types)
-            if not has_patient_cols:
+            ts = infer_table_schema(header, body)
+            if is_non_patient_table_content(header, body, ts):
                 continue
+            col_types = ts.col_types
 
             date_month_first: dict[int, bool] = {}
-            for c_idx, ct in enumerate(col_types):
-                if ct == "DOB" or "date" in header[c_idx].casefold():
-                    date_month_first[c_idx] = _infer_column_month_first([r[c_idx] if c_idx < len(r) else "" for r in body], header[c_idx])
+            for c_idx in ts.date_cols:
+                date_month_first[c_idx] = _infer_column_month_first([r[c_idx] if c_idx < len(r) else "" for r in body], header[c_idx])
 
-            fn_idx = next((i for i, h in enumerate(header) if h.strip().casefold() in ("firstname", "first_name", "fname")), None)
-            ln_idx = next((i for i, h in enumerate(header) if h.strip().casefold() in ("lastname", "last_name", "lname")), None)
-            rel_type_idx = next((i for i, h in enumerate(header) if h.strip().casefold() in ("relation", "rel_type")), None)
+            fn_idx = ts.first_name_cols[0] if ts.first_name_cols else None
+            ln_idx = ts.last_name_cols[0] if ts.last_name_cols else None
+            rel_type_idx = ts.rel_type_cols[0] if ts.rel_type_cols else None
+            age_set = set(ts.age_cols)
+            sex_set = set(ts.sex_cols)
+            age_sex_set = set(ts.age_sex_cols)
+            date_set = set(ts.date_cols)
+            notes_set = set(ts.notes_cols)
 
             for r_idx, row in enumerate(body):
                 ev = RecordEvidence(
@@ -530,13 +575,12 @@ def extract_all_evidences(parsed_items: list[tuple[str, str, Any]]) -> list[Reco
                         if nf:
                             ev.names.append(nf)
 
-                for c_idx, h in enumerate(header):
+                for c_idx, _h in enumerate(header):
                     if c_idx >= len(row):
                         continue
                     val = row[c_idx].strip()
                     if not val:
                         continue
-                    hl = h.casefold().strip()
                     ct = col_types[c_idx]
 
                     if ct == "PATIENT_NAME" and c_idx not in (fn_idx, ln_idx):
@@ -592,23 +636,23 @@ def extract_all_evidences(parsed_items: list[tuple[str, str, Any]]) -> list[Reco
                             ev.pins.add(m_p.group(1))
                     elif ct == "ADDRESS":
                         _extract_address_clues(ev, val)
-                    elif hl in ("gender", "sex", "ling"):
+                    elif c_idx in sex_set:
                         ev.sex = _norm_sex(val) or ev.sex
-                    elif hl in ("age", "umar", "umar_yrs", "age_val"):
-                        m_a = re.search(r"(\d{1,3})", val)
+                    elif c_idx in age_set:
+                        m_a = re.search(r"(\d{1,3})", build_normalized_view(val).clean)
                         if m_a:
                             ev.age = int(m_a.group(1))
-                    elif hl == "age_sex":
+                    elif c_idx in age_sex_set:
                         m_as = re.match(r"(\d{1,3})\s*/\s*([MF])", val, re.I)
                         if m_as:
                             ev.age = int(m_as.group(1))
                             ev.sex = _norm_sex(m_as.group(2))
-                    elif any(w in hl for w in ("date", "collected", "admission", "registered")):
+                    elif c_idx in date_set:
                         rd = _parse_date_str(val, month_first_hint=date_month_first.get(c_idx, False))
                         if rd and not ev.record_date:
                             ev.record_date = rd
                             ev.record_year = int(rd[:4])
-                    elif hl in ("notes", "remarks", "comment"):
+                    elif c_idx in notes_set:
                         _extract_free_text_clues(ev, val)
 
                 if ev.sex is None:
@@ -706,27 +750,58 @@ def extract_all_evidences(parsed_items: list[tuple[str, str, Any]]) -> list[Reco
 
 
 def _extract_dict_evidence(ev: RecordEvidence, obj: dict) -> None:
-    """Iteratively extract evidence from a JSON record dict."""
+    """Iteratively extract evidence from a JSON record dict via compositional schema + value inference."""
     stack: list[tuple[dict, str]] = [(obj, "")]
     while stack:
         node, pk = stack.pop()
-        if ("first" in node and "last" in node) or (pk == "name" and "first" in node):
-            fn = str(node.get("first") or "").strip()
-            ln = str(node.get("last") or "").strip()
-            loc_nm = str(node.get("local") or "").strip()
-            if f"{fn} {ln}".strip():
-                nf = make_name_form(f"{fn} {ln}".strip())
-                if nf:
-                    ev.names.append(nf)
-            if loc_nm:
-                nf = make_name_form(loc_nm)
-                if nf:
-                    ev.names.append(nf)
+        ds = infer_dict_schema(node, parent_key=pk)
+
+        for sub_k, role_tag in ds.sub_dict_roles.items():
+            sub_node = node.get(sub_k)
+            if isinstance(sub_node, dict):
+                sub_ds = infer_dict_schema(sub_node, parent_key=sub_k)
+                f_vals = [
+                    str(sub_node[ck]).strip()
+                    for ck, ph in sub_ds.part_hints.items()
+                    if ph in ("NAME_FIRST", "REL_NAME_FIRST") and isinstance(sub_node.get(ck), str)
+                ]
+                l_vals = [
+                    str(sub_node[ck]).strip()
+                    for ck, ph in sub_ds.part_hints.items()
+                    if ph in ("NAME_LAST", "REL_NAME_LAST") and isinstance(sub_node.get(ck), str)
+                ]
+                loc_vals = [
+                    str(sub_node[ck]).strip()
+                    for ck, ph in sub_ds.part_hints.items()
+                    if ph == "NAME_LOCAL" and isinstance(sub_node.get(ck), str)
+                ]
+                full_nm = " ".join(x for x in f_vals + l_vals if x).strip()
+                if not full_nm and not loc_vals:
+                    raw_parts = [str(sv).strip() for sv in sub_node.values() if isinstance(sv, str) and sv.strip()]
+                    full_nm = " ".join(raw_parts).strip()
+                if role_tag == "RELATIVE_NAME_OBJ":
+                    if full_nm:
+                        _add_relative(ev, "", full_nm)
+                    for lv in loc_vals:
+                        if lv:
+                            _add_relative(ev, "", lv)
+                else:
+                    if full_nm:
+                        nf = make_name_form(full_nm)
+                        if nf:
+                            ev.names.append(nf)
+                    for lv in loc_vals:
+                        if lv:
+                            nf = make_name_form(lv)
+                            if nf:
+                                ev.names.append(nf)
 
         for k, v in node.items():
-            kl = str(k).casefold()
+            ks = str(k)
+            kl = ks.casefold()
             if isinstance(v, dict):
-                stack.append((v, kl))
+                if k not in ds.sub_dict_roles:
+                    stack.append((v, kl))
                 continue
             if isinstance(v, list):
                 for it in v:
@@ -736,7 +811,9 @@ def _extract_dict_evidence(ev: RecordEvidence, obj: dict) -> None:
             if v is None:
                 continue
 
-            if kl in ("doctor", "referred_by", "ref_doctor", "consultant", "doc_consultant", "reviewed_by"):
+            ph = ds.part_hints.get(ks) or classify_header_parts(ks, pk)
+            ft = ds.field_types.get(ks)
+            if ph == "DOCTOR":
                 continue
             if isinstance(v, int) and not isinstance(v, bool):
                 if 100_000_000_000 <= v <= 999_999_999_999:
@@ -749,7 +826,7 @@ def _extract_dict_evidence(ev: RecordEvidence, obj: dict) -> None:
                     ev.has_strong_id = True
                 elif 6_000_000_000 <= v <= 9_999_999_999:
                     ev.phones.add(str(v))
-                elif kl in ("age", "umar"):
+                elif ph == "AGE":
                     ev.age = v
                 continue
 
@@ -757,62 +834,69 @@ def _extract_dict_evidence(ev: RecordEvidence, obj: dict) -> None:
                 continue
             vs = v.strip()
 
-            if kl in ("uhid", "patient_ref", "hospital_uhid", "mrn", "pt_uid", "record_code"):
+            if ft == "MRN":
                 _add_mrn(ev, vs)
-            elif kl in ("patient_name", "beneficiary_full_name", "mariz_naam", "patient") or (kl == "name" and pk in ("", "patient", "raised_by")):
+            elif ft == "PATIENT_NAME":
                 nf = make_name_form(vs)
                 if nf:
                     ev.names.append(nf)
-            elif kl == "name" and pk == "guardian":
+            elif ft == "RELATIVE_NAME":
                 rel_t = str(node.get("relation") or "")
                 _add_relative(ev, rel_t, vs)
-            elif kl in ("mobile", "phone", "callback", "mob_num", "contact_phone"):
-                d10 = re.sub(r"\D", "", vs)[-10:]
+            elif ft == "PHONE":
+                d10 = re.sub(r"\D", "", build_normalized_view(vs).clean)[-10:]
                 if len(d10) == 10:
                     ev.phones.add(d10)
-            elif kl in ("email", "mail_id"):
+            elif ft == "EMAIL":
                 ev.emails.add(vs.casefold())
                 ev.has_strong_id = True
-            elif kl in ("dob", "birth_dt", "janm_dinank"):
+            elif ft == "DOB":
                 d = _parse_date_str(vs)
                 if d:
                     ev.dob = d
-            elif kl in ("gender", "sex", "ling"):
+            elif ph == "GENDER":
                 ev.sex = _norm_sex(vs) or ev.sex
-            elif kl == "age_sex":
+            elif ph == "AGE":
+                m_a = re.search(r"(\d{1,3})", build_normalized_view(vs).clean)
+                if m_a and 0 <= int(m_a.group(1)) <= 115:
+                    ev.age = int(m_a.group(1))
+            elif ph == "AGE_SEX":
                 m_as = re.match(r"(\d{1,3})\s*/\s*([MF])", vs, re.I)
                 if m_as:
                     ev.age = int(m_as.group(1))
                     ev.sex = _norm_sex(m_as.group(2))
-            elif kl in ("village", "city") and pk in ("", "address"):
+            elif ft == "VILLAGE":
                 _add_village(ev, vs)
-            elif kl in ("pin", "pin_zip", "dak_code"):
+            elif ft == "PIN":
                 m_p = re.search(r"([1-8]\d{5})", vs)
                 if m_p:
                     ev.pins.add(m_p.group(1))
-            elif kl in ("line", "address_note") or "address" in kl:
+            elif ft == "ADDRESS":
                 _extract_address_clues(ev, vs)
-            elif "aadhar" in kl or "aadhaar" in kl or "adhaar" in kl:
+            elif ft == "AADHAAR":
                 digits = re.sub(r"\D", "", vs)
                 if len(digits) == 12:
                     ev.aadhaars.add(digits)
                     ev.aadhaar_last4.add(digits[-4:])
                     ev.has_strong_id = True
-            elif "abha_addr" in kl or "abdm_addr" in kl:
+            elif ft == "ABHA_ADDRESS":
                 ev.abhas.add(vs.casefold())
                 ev.has_strong_id = True
-            elif "abha" in kl or "abdm" in kl:
+            elif ft == "ABHA_NUMBER":
                 digits = re.sub(r"\D", "", vs)
                 if len(digits) == 14:
                     ev.abhas.add(digits)
                     ev.has_strong_id = True
-            elif "pan" in kl and re.fullmatch(r"[A-Z]{5}\d{4}[A-Z]", vs.upper()):
+            elif ft == "PAN":
                 ev.pans.add(vs.upper())
                 ev.has_strong_id = True
-            elif kl in ("visit_date", "collected", "date", "registered_on") and not ev.record_date:
+            elif ft == "INSURANCE_ID":
+                ev.insurances.add(vs.upper())
+                ev.has_strong_id = True
+            elif ph == "CLINICAL_DATE" and not ev.record_date:
                 rd = _parse_date_str(vs)
                 if rd:
                     ev.record_date = rd
                     ev.record_year = int(rd[:4])
-            elif kl in ("notes", "note", "remarks"):
+            elif ph == "FREE_TEXT":
                 _extract_free_text_clues(ev, vs)

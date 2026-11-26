@@ -23,6 +23,43 @@ _HOMOGLYPHS = str.maketrans({
 
 _DEVA_RUN_RE = re.compile(r"[\u0900-\u097F]+")
 
+# Shared Unicode Latin & Devanagari letter classes (covers composed NFC Latin-1 & Latin Extended-A/B/Additional)
+LATIN_LETTER_CLASS = r"A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F\u1E00-\u1EFF"
+LATIN_UPPER_CLASS = (
+    r"A-Z\u00C0-\u00D6\u00D8-\u00DE"
+    r"\u0100\u0102\u0104\u0106\u0108\u010A\u010C\u010E\u0110\u0112\u0114\u0116\u0118\u011A"
+    r"\u011C\u011E\u0120\u0122\u0124\u0126\u0128\u012A\u012C\u012E\u0130\u0132\u0134\u0136"
+    r"\u0139\u013B\u013D\u013F\u0141\u0143\u0145\u0147\u014A\u014C\u014E\u0150\u0152\u0154"
+    r"\u0156\u0158\u015A\u015C\u015E\u0160\u0162\u0164\u0166\u0168\u016A\u016C\u016E\u0170"
+    r"\u0172\u0174\u0176\u0178\u0179\u017B\u017D"
+)
+DEVA_LETTER_CLASS = r"\u0900-\u0963\u0970-\u097F"
+
+
+def is_deva_char(ch: str) -> bool:
+    return "\u0900" <= ch <= "\u0963" or "\u0970" <= ch <= "\u097F"
+
+
+def fold_latin_accents(text: str) -> str:
+    """Fold composed or decomposed Latin accents to ASCII letters while preserving Devanagari."""
+    out: list[str] = []
+    for ch in unicodedata.normalize("NFKC", text):
+        if "\u0900" <= ch <= "\u097F":
+            out.append(ch)
+        else:
+            for sub in unicodedata.normalize("NFKD", ch):
+                if not unicodedata.combining(sub):
+                    out.append(sub)
+    return "".join(out)
+
+
+def is_upper_or_deva_start(tok: str) -> bool:
+    """True if token starts with any Unicode uppercase Latin letter (incl. accented) or Devanagari letter."""
+    if not tok:
+        return False
+    ch = unicodedata.normalize("NFC", tok)[0]
+    return ch.isupper() or is_deva_char(ch)
+
 # Devanagari vowel signs/vowels that end in an explicit vowel (do NOT drop trailing 'a' from ITRANS)
 _DEVA_EXPLICIT_END = set("अआइईउऊएऐओऔअंअःािीुूेैोौंः")
 

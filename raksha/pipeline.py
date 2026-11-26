@@ -25,12 +25,16 @@ from raksha.detect.protected import build_clinical_lexicon, resolve_pii_vs_prote
 from raksha.detect.registry import build_alias_registry
 from raksha.detect.structured import (
     infer_column_type,
+    infer_dict_schema,
+    infer_table_schema,
+    is_non_patient_json_content,
+    is_non_patient_table_content,
     process_table_rows,
     sanitize_header_or_key,
     sanitize_json_data,
 )
 from raksha.export.filenames import sanitize_relative_path
-from raksha.identity.evidence import extract_all_evidences, get_json_record_units
+from raksha.identity.evidence import extract_all_evidences, get_json_record_units, is_non_patient_text_content
 from raksha.identity.linker import resolve_clusters
 from raksha.identity.pseudonymizer import (
     inject_psn_json_obj,
@@ -40,7 +44,7 @@ from raksha.identity.pseudonymizer import (
 )
 from raksha.ingest.loader import SUPPORTED_EXTS, decode_bytes, load_json_safe, load_tabular, sniff_format
 from raksha.privacy.dates import infer_month_first, keyed_shift_days
-from raksha.privacy.risk import PolicySettings, PrivacyPlan, assess_privacy_risks, is_non_patient_static_file
+from raksha.privacy.risk import PolicySettings, PrivacyPlan, assess_privacy_risks
 from raksha.privacy.transform import apply_privacy_to_json, apply_privacy_to_tabular, generalize_text
 from raksha.qa.leak_scanner import scan_and_remediate
 
@@ -61,28 +65,41 @@ def _collect_mrn_examples(parsed_items: list[tuple[str, str, object]]) -> list[s
     for _rel, fmt, payload in parsed_items:
         if fmt in ("csv", "tsv") and isinstance(payload, list) and len(payload) > 1:
             header, body = payload[0], payload[1:]
+            ts = infer_table_schema(header, body)
             for c_idx, h in enumerate(header):
-                vals = [r[c_idx] if c_idx < len(r) else "" for r in body]
-                if infer_column_type(vals, header=h) == "MRN":
-                    mrns.extend(str(v).strip() for v in vals if str(v).strip())
+                if ts.col_types[c_idx] == "MRN" or infer_column_type([r[c_idx] if c_idx < len(r) else "" for r in body], header=h) == "MRN":
+                    mrns.extend(str(r[c_idx]).strip() for r in body if c_idx < len(r) and str(r[c_idx]).strip())
         elif fmt == "json" and isinstance(payload, dict):
-            # Iterative walk of list-of-dict records for MRN columns
-            stack = [payload]
+            # Iterative walk of nested dicts and list-of-dict records for MRN fields
+            stack: list[tuple[object, str]] = [(payload, "")]
             while stack:
-                node = stack.pop()
+                node, pk = stack.pop()
                 if isinstance(node, dict):
+                    ds = infer_dict_schema(node, parent_key=pk)
                     for k, v in node.items():
-                        if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
-                            for rk in v[0].keys():
+                        ks = str(k)
+                        if ds.field_types.get(ks) == "MRN" and isinstance(v, (str, int)) and not isinstance(v, bool):
+                            sv = str(v).strip()
+                            if sv:
+                                mrns.append(sv)
+                        elif isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+                            seen_keys: list[str] = []
+                            seen_set: set[str] = set()
+                            for row in v[:20]:
+                                for rk in row.keys():
+                                    if rk not in seen_set:
+                                        seen_set.add(rk)
+                                        seen_keys.append(rk)
+                            for rk in seen_keys:
                                 vals = [row.get(rk) for row in v if rk in row]
-                                if infer_column_type(vals, header=rk, parent_key=k) == "MRN":
+                                if infer_column_type(vals, header=rk, parent_key=ks) == "MRN":
                                     mrns.extend(str(x).strip() for x in vals if x is not None and str(x).strip())
-                        elif isinstance(v, (dict, list)):
-                            stack.append(v)
+                        if isinstance(v, (dict, list)):
+                            stack.append((v, ks))
                 elif isinstance(node, list):
                     for item in node:
                         if isinstance(item, (dict, list)):
-                            stack.append(item)
+                            stack.append((item, pk))
     return mrns
 
 
@@ -99,7 +116,8 @@ def _process_tabular(
 ) -> str:
     clean_header, clean_body = process_table_rows(rows, text_scrubber=text_scrubber, stats=stats)
     gen_flags: dict[int, bool] = {}
-    if plans_by_rec is not None and not is_non_patient_static_file(rel):
+    is_non_pt = len(rows) <= 1 or is_non_patient_table_content(rows[0], rows[1:])
+    if plans_by_rec is not None and not is_non_pt:
         plans_by_row = {i: plans_by_rec[(rel, f"row:{i}")] for i in range(len(clean_body)) if (rel, f"row:{i}") in plans_by_rec}
         if plans_by_row:
             clean_body, gen_flags = apply_privacy_to_tabular(rows[0], rows[1:], clean_body, rel, plans_by_row)
@@ -145,7 +163,7 @@ def _process_json(
                     key_to_cleaned[orig_k] = sk
 
     loc_gen: dict[str, bool] = {}
-    if plans_by_rec is not None and not is_non_patient_static_file(rel):
+    if plans_by_rec is not None and not is_non_patient_json_content(data):
         plans_by_loc = {loc: plans_by_rec[(rel, loc)] for loc, _ in units if (rel, loc) in plans_by_rec}
         month_first = False
         if isinstance(data, dict):
@@ -204,7 +222,7 @@ def _process_text(
     psn = record_to_psn.get((rel, "doc")) if record_to_psn is not None else None
     cleaned = text_scrubber(text) if text_scrubber is not None else text
     was_gen = False
-    if plan is not None and not is_non_patient_static_file(rel):
+    if plan is not None and not is_non_patient_text_content(text):
         month_first = infer_month_first([text], header_or_rel_hint=rel)
         cleaned, was_gen = generalize_text(cleaned, plan, month_first=month_first)
     if psn is not None:
@@ -279,7 +297,7 @@ def run_pipeline(
         _collect_mrn_examples(parsed_items)
     )
     clinical_lexicon = build_clinical_lexicon(parsed_items)
-    alias_registry = build_alias_registry(parsed_items)
+    alias_registry = build_alias_registry(parsed_items, clinical_lexicon=clinical_lexicon)
     crf_predictor = CRFPredictor()
 
     # Link first, redact second: resolve patient clusters & issue >=80-bit HMAC pseudonyms

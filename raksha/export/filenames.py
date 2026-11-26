@@ -47,7 +47,7 @@ def sanitize_relative_path(
         stem = Path(part).stem if is_last else part
         ext = Path(part).suffix if is_last else ""
 
-        # Collect spans from identifier regexes (case-insensitive filename IDs) + registry
+        # Collect spans from identifier regexes (Unicode NFC/NFD safe) + registry
         space_stem = stem.replace("_", " ")
         spans: list[Span] = []
         spans.extend(detect_identifier_spans(space_stem, extra_mrn_patterns=extra_mrn_patterns))

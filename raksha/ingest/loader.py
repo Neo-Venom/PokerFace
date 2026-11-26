@@ -9,13 +9,21 @@ from pathlib import Path
 
 SUPPORTED_EXTS = {".csv", ".tsv", ".json", ".txt"}
 
-# Bytes valid in legacy Windows-1252 medical text exports (smart quotes, dashes, degree, micro, nbsp, etc.).
-# Random high bytes like 0xff/0xfe/0xc3 indicate binary corruption or mojibake, not legitimate cp1252.
-_CP1252_SAFE_EXTRA = {
-    0x85, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
-    0xA0, 0xA7, 0xA9, 0xAE, 0xB0, 0xB1, 0xB5, 0xB7,
-    0xBC, 0xBD, 0xBE, 0xD7, 0xF7,
-}
+# Bytes valid in legacy Windows-1252 medical/Latin text exports (smart quotes, dashes, degree, micro, nbsp,
+# plus valid Windows-1252 accented Latin letters such as É, é, è, ç, ö, ü).
+# Unassigned cp1252 slots (0x81, 0x8D, 0x8F, 0x90, 0x9D) and embedded UTF-16 BOM / mojibake markers are rejected.
+_CP1252_SAFE_EXTRA = (
+    {
+        0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8E,
+        0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9E, 0x9F,
+        0xA0, 0xA7, 0xA9, 0xAE, 0xB0, 0xB1, 0xB5, 0xB7, 0xBC, 0xBD, 0xBE, 0xD7, 0xF7,
+    }
+    | set(range(0xC0, 0xD7))
+    | set(range(0xD8, 0xDF))
+    | set(range(0xE0, 0xF7))
+    | set(range(0xF8, 0xFF))
+)
+_MOJIBAKE_MARKERS = (b"\xff\xfe", b"\xfe\xff", b"\xc3(")
 
 
 def decode_bytes(raw: bytes) -> str:
@@ -48,7 +56,11 @@ def decode_bytes(raw: bytes) -> str:
     except UnicodeDecodeError:
         pass
 
-    # Strict cp1252 check: only allow well-formed cp1252 punctuation/clinical symbols
+    # Reject embedded BOMs / mojibake corrupt sequences inside 8-bit exports
+    if any(marker in raw for marker in _MOJIBAKE_MARKERS):
+        raise ValueError("invalid_encoding")
+
+    # Strict cp1252 check: only allow well-formed cp1252 punctuation, symbols, and accented Latin letters
     for b in raw:
         if b < 0x80:
             if b < 0x20 and b not in (0x09, 0x0A, 0x0D):

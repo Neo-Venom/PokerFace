@@ -6,13 +6,25 @@ import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
-from raksha.detect.structured import _is_fhir_bundle, infer_column_type
-from raksha.identity.evidence import RecordEvidence, get_json_record_units
+from raksha.detect.normalize import DEVA_LETTER_CLASS, LATIN_LETTER_CLASS
+from raksha.detect.structured import (
+    TableSchema,
+    _is_fhir_bundle,
+    classify_header_parts,
+    infer_table_schema,
+)
+from raksha.identity.evidence import RecordEvidence, get_json_record_units, is_non_patient_item
 from raksha.identity.linker import ClusterResult
 from raksha.privacy.dates import keyed_shift_days
 
 _DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
-_NON_PATIENT_PATH_TOKS = ("clean/",)
+_GEO_CH = f"{LATIN_LETTER_CLASS}{DEVA_LETTER_CLASS}"
+_DIST_INLINE_RE = re.compile(
+    rf"(?i)(?:Distt?\.?|District|जिला)\s*[:\-]?\s*([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+)?)"
+)
+_TEHSIL_INLINE_RE = re.compile(
+    rf"(?i)(?:Tehsil|तहसील)\s*[:\-]?\s*([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+)?)"
+)
 
 # Empirical UP rural/district population pyramid relative probability per single year of age (sums ~ 1.0 over 0..100)
 def _year_density(age: int) -> float:
@@ -97,11 +109,6 @@ class _ProfileQI:
     conditions: set[str]
 
 
-def is_non_patient_static_file(rel: str) -> bool:
-    low = rel.casefold()
-    return any(tok in low for tok in _NON_PATIENT_PATH_TOKS)
-
-
 def _norm_tok(s: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", s).translate(_DEVA_DIGITS).casefold().split())
 
@@ -122,6 +129,7 @@ def _extract_geo_and_cond_for_record(
     sub_obj: object,
     col_types: list[str | None] | None = None,
     header: list[str] | None = None,
+    table_schema: TableSchema | None = None,
 ) -> tuple[set[str], set[str], set[str]]:
     """Extract (districts, tehsils, conditions) purely from input record without touching external truth."""
     districts: set[str] = set()
@@ -129,6 +137,7 @@ def _extract_geo_and_cond_for_record(
     conds: set[str] = set()
 
     if fmt in ("csv", "tsv") and isinstance(sub_obj, list) and header is not None:
+        part_hints = table_schema.part_hints if table_schema is not None else [classify_header_parts(h) for h in header]
         for i, cell in enumerate(sub_obj):
             if i >= len(header):
                 continue
@@ -136,20 +145,21 @@ def _extract_geo_and_cond_for_record(
             if not val:
                 continue
             hl = header[i].casefold().strip()
-            if hl in ("district", "jila", "distt"):
+            ph = part_hints[i] if i < len(part_hints) else None
+            if ph == "DISTRICT" or hl in ("district", "jila", "distt"):
                 districts.add(_norm_tok(val))
-            elif hl == "tehsil":
+            elif ph == "TEHSIL" or hl == "tehsil":
                 tehsils.add(_norm_tok(val))
             elif hl in ("procedure", "diagnosis"):
                 c = _norm_tok(re.sub(r"\([^)]*\)", "", val))
                 if len(c) >= 4:
                     conds.add(c)
-            elif col_types and col_types[i] == "ADDRESS":
-                for md in re.finditer(r"(?i)(?:Distt?\.?|District|जिला)\s*[:\-]?\s*([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+)?)", val):
+            elif (col_types and col_types[i] == "ADDRESS") or ph in ("ADDRESS", "LOCALITY", "VILLAGE", "LANDMARK"):
+                for md in _DIST_INLINE_RE.finditer(val):
                     districts.add(_norm_tok(md.group(1)))
-                for mt in re.finditer(r"(?i)(?:Tehsil|तहसील)\s*[:\-]?\s*([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+)?)", val):
+                for mt in _TEHSIL_INLINE_RE.finditer(val):
                     tehsils.add(_norm_tok(mt.group(1)))
-            elif hl in ("notes", "remarks", "comment"):
+            elif ph == "FREE_TEXT" or hl in ("notes", "remarks", "comment"):
                 _extract_conds_from_text(val, conds)
 
     elif fmt == "json" and isinstance(sub_obj, dict):
@@ -164,9 +174,9 @@ def _extract_geo_and_cond_for_record(
                                 districts.add(_norm_tok(addr["district"]))
                             for ln in addr.get("line", []):
                                 s = str(ln)
-                                for md in re.finditer(r"(?i)(?:Distt?\.?|District|जिला)\s*[:\-]?\s*([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+)?)", s):
+                                for md in _DIST_INLINE_RE.finditer(s):
                                     districts.add(_norm_tok(md.group(1)))
-                                for mt in re.finditer(r"(?i)(?:Tehsil|तहसील)\s*[:\-]?\s*([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+)?)", s):
+                                for mt in _TEHSIL_INLINE_RE.finditer(s):
                                     tehsils.add(_norm_tok(mt.group(1)))
                 elif rt == "Condition":
                     cd = res.get("code", {})
@@ -185,7 +195,9 @@ def _extract_geo_and_cond_for_record(
             while stack:
                 nd = stack.pop()
                 for k, v in nd.items():
-                    kl = str(k).casefold()
+                    ks = str(k)
+                    kl = ks.casefold()
+                    ph = classify_header_parts(ks)
                     if isinstance(v, dict):
                         stack.append(v)
                     elif isinstance(v, list):
@@ -200,22 +212,24 @@ def _extract_geo_and_cond_for_record(
                                 if isinstance(it, dict):
                                     stack.append(it)
                     elif isinstance(v, str) and v.strip():
-                        if kl in ("district", "jila", "distt"):
+                        if ph == "DISTRICT" or kl in ("district", "jila", "distt"):
                             districts.add(_norm_tok(v))
-                        elif kl == "tehsil":
+                        elif ph == "TEHSIL" or kl == "tehsil":
                             tehsils.add(_norm_tok(v))
                         elif kl in ("diagnosis", "procedure"):
                             conds.add(_norm_tok(v))
-                        elif kl in ("line", "address_note") or "address" in kl:
-                            for md in re.finditer(r"(?i)(?:Distt?\.?|District|जिला)\s*[:\-]?\s*([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+)?)", v):
+                        elif ph in ("ADDRESS", "LOCALITY", "VILLAGE", "LANDMARK", "FREE_TEXT") or kl in ("line", "address_note") or "address" in kl:
+                            for md in _DIST_INLINE_RE.finditer(v):
                                 districts.add(_norm_tok(md.group(1)))
-                            for mt in re.finditer(r"(?i)(?:Tehsil|तहसील)\s*[:\-]?\s*([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+)?)", v):
+                            for mt in _TEHSIL_INLINE_RE.finditer(v):
                                 tehsils.add(_norm_tok(mt.group(1)))
+                            if ph == "FREE_TEXT":
+                                _extract_conds_from_text(v, conds)
 
     elif fmt == "txt" and isinstance(sub_obj, str):
-        for md in re.finditer(r"(?i)(?:Distt?\.?|District|जिला)\s*[:\-]?\s*([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+)?)(?=\s*[-,\n]|$)", sub_obj):
+        for md in re.finditer(rf"(?i)(?:Distt?\.?|District|जिला)\s*[:\-]?\s*([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+)?)(?=\s*[-,\n]|$)", sub_obj):
             districts.add(_norm_tok(md.group(1)))
-        for mt in re.finditer(r"(?i)(?:Tehsil|तहसील)\s*[:\-]?\s*([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+)?)(?=\s*[,\n]|$)", sub_obj):
+        for mt in re.finditer(rf"(?i)(?:Tehsil|तहसील)\s*[:\-]?\s*([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+)?)(?=\s*[,\n]|$)", sub_obj):
             tehsils.add(_norm_tok(mt.group(1)))
         _extract_conds_from_text(sub_obj, conds)
 
@@ -250,29 +264,26 @@ def assess_privacy_risks(
         if cid in cluster_to_psn
     }
 
-    # Build raw record index for extra geo/cond clues
+    # Build raw record index using unified schema inference
     item_map = {rel: (fmt, payload) for rel, fmt, payload in parsed_items}
     col_cache: dict[str, tuple[list[str], list[str | None]]] = {}
+    schema_cache: dict[str, TableSchema] = {}
     for rel, fmt, payload in parsed_items:
         if fmt in ("csv", "tsv") and isinstance(payload, list) and len(payload) > 1:
             hdr, body = payload[0], payload[1:]
-            cts = [infer_column_type([r[c] if c < len(r) else "" for r in body], header=h) for c, h in enumerate(hdr)]
-            col_cache[rel] = (hdr, cts)
+            ts_obj = infer_table_schema(hdr, body)
+            schema_cache[rel] = ts_obj
+            col_cache[rel] = (hdr, ts_obj.col_types)
 
-    # Group all patient-bearing records into profiles
+    # Group all patient-bearing records into profiles using content-based classification (no 'clean/' path heuristic)
     profiles: dict[str, _ProfileQI] = {}
     for rel, fmt, payload in parsed_items:
-        if is_non_patient_static_file(rel):
+        ts_obj = schema_cache.get(rel)
+        ev_doc = ev_by_key.get((rel, "doc"))
+        if is_non_patient_item(rel, fmt, payload, ts=ts_obj, ev=ev_doc):
             continue
         rec_units: list[tuple[str, object]] = []
         if fmt in ("csv", "tsv") and isinstance(payload, list) and len(payload) > 1:
-            hdr_c, cts_c = col_cache.get(rel, ([], []))
-            hdr_low = {str(h).strip().casefold() for h in hdr_c}
-            has_qi_or_pt = any(
-                ct in ("PATIENT_NAME", "AADHAAR", "ABHA_NUMBER", "PHONE", "DOB") for ct in cts_c
-            ) or bool(hdr_low & {"age", "umar", "age_sex", "district", "jila", "tehsil", "admission_date", "discharge_date", "visit_date", "collected_on", "reg date", "registration date", "uhid", "patient_name"})
-            if not has_qi_or_pt:
-                continue
             rec_units = [(f"row:{i}", row) for i, row in enumerate(payload[1:])]
         elif fmt == "json":
             rec_units = get_json_record_units(payload)
@@ -282,7 +293,9 @@ def assess_privacy_risks(
         hdr, cts = col_cache.get(rel, (None, None))
         for loc, sub_obj in rec_units:
             ev = ev_by_key.get((rel, loc))
-            ds, ts, cs = _extract_geo_and_cond_for_record(rel, fmt, sub_obj, col_types=cts, header=hdr)
+            ds, ts, cs = _extract_geo_and_cond_for_record(
+                rel, fmt, sub_obj, col_types=cts, header=hdr, table_schema=ts_obj
+            )
             if fmt == "txt" and ev is None and not ds and not ts and not cs:
                 continue
             psn = rec_to_psn.get((rel, loc))

@@ -6,7 +6,14 @@ import datetime as dt
 import re
 from typing import Any
 
-from raksha.detect.structured import _CLINICAL_DATE_KEYS, _is_fhir_bundle, _norm_key
+from raksha.detect.normalize import DEVA_LETTER_CLASS, LATIN_LETTER_CLASS
+from raksha.detect.structured import (
+    _CLINICAL_DATE_KEYS,
+    _is_fhir_bundle,
+    _norm_key,
+    classify_header_parts,
+    infer_table_schema,
+)
 from raksha.export.filenames import sanitize_base64_string
 from raksha.privacy.dates import (
     infer_month_first,
@@ -16,6 +23,7 @@ from raksha.privacy.dates import (
 )
 from raksha.privacy.risk import PolicySettings, PrivacyPlan
 
+_GEO_CH = f"{LATIN_LETTER_CLASS}{DEVA_LETTER_CLASS}"
 _AGE_LABELED_RE = re.compile(
     r"(?i)(\b(?:Age(?:/Sex)?|आयु)\s*[:\-]\s*)(\d{1,3})(\s*(?:Yrs?|वर्ष|Y))?(?:\s*/\s*([MF]|पुरुष|महिला))?"
 )
@@ -24,10 +32,10 @@ _AGE_COMPACT_RE = re.compile(
 )
 _AGE_YRS_TEXT_RE = re.compile(r"(?i)(?<!x\s)(?<!back\s)\b(\d{1,3})(\s+yrs?\b)(?!\s*(?:back|ago))")
 _TEHSIL_TXT_RE = re.compile(
-    r"(?i)(\bTehsil\.?\s+|तहसील\s*[:\-]?\s*)([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+){0,2})(?=\s*[,\.\-\n\r]|$)"
+    rf"(?i)(\bTehsil\.?\s+|तहसील\s*[:\-]?\s*)([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+){{0,2}})(?=\s*[,\.\-\n\r]|$)"
 )
 _DISTRICT_TXT_RE = re.compile(
-    r"(?i)(\bDistt?\.?\s+|\bDistrict\s*[:\-]?\s*|जिला\s*[:\-]?\s*)([A-Za-z\u0900-\u097F]+(?:\s+[A-Za-z\u0900-\u097F]+){0,2})(?=\s*[-,\.\n\r]|$)"
+    rf"(?i)(\bDistt?\.?\s+|\bDistrict\s*[:\-]?\s*|जिला\s*[:\-]?\s*)([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+){{0,2}})(?=\s*[-,\.\n\r]|$)"
 )
 _SEX_LINE_RE = re.compile(
     r"(?i)(\b(?:Sex|Gender|लिंग)\s*[:\-]\s*)(Female|Male|F|M|Other|महिला|पुरुष|अन्य)\b"
@@ -155,10 +163,19 @@ def apply_privacy_to_tabular(
     """Apply M3 privacy transformations row-by-row to sanitized tabular cells."""
     n_cols = len(orig_header)
     norm_hdrs = [_norm_key(h) for h in orig_header]
+    ts = infer_table_schema(orig_header, orig_body)
     col_month_first: dict[int, bool] = {}
     for ci, h in enumerate(orig_header):
         hk = norm_hdrs[ci]
-        if hk in _CLINICAL_DATE_KEYS or "date" in hk or "registered" in hk or "collected" in hk or "reported" in hk:
+        ph = ts.part_hints[ci] if ci < len(ts.part_hints) else None
+        if (
+            (ph in ("CLINICAL_DATE", "DATE") and ts.col_types[ci] != "DOB")
+            or hk in _CLINICAL_DATE_KEYS
+            or "date" in hk
+            or "registered" in hk
+            or "collected" in hk
+            or "reported" in hk
+        ):
             col_month_first[ci] = infer_month_first(
                 [str(r[ci]) if ci < len(r) else "" for r in orig_body],
                 header_or_rel_hint=f"{h} {rel}",
@@ -182,10 +199,11 @@ def apply_privacy_to_tabular(
             if ci >= n_cols or not str(cell).strip():
                 continue
             hk = norm_hdrs[ci]
+            ph = ts.part_hints[ci] if ci < len(ts.part_hints) else None
             orig_val = str(orig_row[ci]).strip() if ci < len(orig_row) else str(cell).strip()
             sval = str(cell)
 
-            if hk in ("age", "umar", "age_yrs", "age_val"):
+            if ph == "AGE" or hk in ("age", "umar", "age_yrs", "age_val"):
                 m_int = re.match(r"^\s*(\d{1,3})(\s*(?:Yrs?|वर्ष|Y))?\s*$", orig_val, re.I)
                 if m_int:
                     a = int(m_int.group(1))
@@ -194,32 +212,36 @@ def apply_privacy_to_tabular(
                         unit = m_int.group(2) or ""
                         row[ci] = f"{band}{unit}"
                         row_changed = True
-            elif hk == "age_sex":
-                m_as = re.match(r"^\s*(\d{1,3})\s*/\s*([MF])\s*$", orig_val, re.I)
+            elif ph == "AGE_SEX" or hk == "age_sex":
+                m_as = re.match(r"^\s*(\d{1,3})\s*/\s*([MF]|Female|Male)\s*$", orig_val, re.I)
                 if m_as:
                     a = int(m_as.group(1))
                     band = format_truthful_age_band(a, plan.age_band_width, plan.top_age_cap)
-                    sx = m_as.group(2).upper() if plan.keep_gender else "[GENDER]"
+                    sx = m_as.group(2)[0].upper() if plan.keep_gender else "[GENDER]"
                     row[ci] = f"{band}/{sx}"
                     row_changed = True
-            elif hk in ("gender", "sex", "ling"):
+            elif ph == "GENDER" or hk in ("gender", "sex", "ling"):
                 if not plan.keep_gender:
                     row[ci] = "[GENDER]"
                     row_changed = True
-            elif hk == "tehsil":
+            elif ph == "TEHSIL" or hk == "tehsil":
                 if not plan.keep_tehsil and sval != "[TEHSIL]":
                     row[ci] = "[TEHSIL]"
                     row_changed = True
-            elif hk in ("district", "jila", "distt"):
+            elif ph == "DISTRICT" or hk in ("district", "jila", "distt"):
                 if not plan.keep_district and sval != "[DISTRICT]":
                     row[ci] = "[DISTRICT]"
+                    row_changed = True
+            elif ph == "DOB":
+                if sval != "[DOB]":
+                    row[ci] = "[DOB]"
                     row_changed = True
             elif ci in col_month_first:
                 shifted, c_dt = shift_date_str(sval, plan.shift_days, month_first=col_month_first[ci])
                 if c_dt:
                     row[ci] = shifted
                     row_changed = True
-            elif hk in ("notes", "remarks", "comment", "address", "pata", "street") or "[HOUSE]" in sval or "[VILLAGE]" in sval:
+            elif ph in ("FREE_TEXT", "ADDRESS", "LOCALITY", "VILLAGE", "LANDMARK") or hk in ("notes", "remarks", "comment", "address", "pata", "street") or "[HOUSE]" in sval or "[VILLAGE]" in sval:
                 g_txt, c_t = generalize_text(sval, plan, month_first=infer_month_first([sval], header_or_rel_hint=rel))
                 if c_t:
                     row[ci] = g_txt
@@ -254,6 +276,7 @@ def _apply_privacy_dict_obj(
         container, slot, k_str = stack.pop()
         val = container[slot]
         kl = _norm_key(k_str)
+        ph = classify_header_parts(k_str) if k_str else None
 
         if isinstance(val, dict):
             if kl == "_export_meta":
@@ -266,7 +289,7 @@ def _apply_privacy_dict_obj(
                 stack.append((val, i, k_str))
             continue
 
-        if kl in ("age", "umar", "age_yrs"):
+        if ph == "AGE" or kl in ("age", "umar", "age_yrs"):
             a: int | None = None
             unit = ""
             if isinstance(val, int) and not isinstance(val, bool) and 0 <= val <= 115:
@@ -279,30 +302,31 @@ def _apply_privacy_dict_obj(
             if a is not None:
                 container[slot] = f"{format_truthful_age_band(a, plan.age_band_width, plan.top_age_cap)}{unit}"
                 changed = True
-        elif kl == "age_sex" and isinstance(val, str):
-            m_as = re.match(r"^\s*(\d{1,3})\s*/\s*([MF])\s*$", val, re.I)
+        elif (ph == "AGE_SEX" or kl == "age_sex") and isinstance(val, str):
+            m_as = re.match(r"^\s*(\d{1,3})\s*/\s*([MF]|Female|Male)\s*$", val, re.I)
             if m_as:
                 band = format_truthful_age_band(int(m_as.group(1)), plan.age_band_width, plan.top_age_cap)
-                sx = m_as.group(2).upper() if plan.keep_gender else "[GENDER]"
+                sx = m_as.group(2)[0].upper() if plan.keep_gender else "[GENDER]"
                 container[slot] = f"{band}/{sx}"
                 changed = True
-        elif kl in ("gender", "sex", "ling") and isinstance(val, str):
+        elif (ph == "GENDER" or kl in ("gender", "sex", "ling")) and isinstance(val, str):
             if not plan.keep_gender and val.strip():
                 container[slot] = "[GENDER]"
                 changed = True
-        elif kl == "tehsil" and isinstance(val, str):
+        elif (ph == "TEHSIL" or kl == "tehsil") and isinstance(val, str):
             if not plan.keep_tehsil and val.strip() and val != "[TEHSIL]":
                 container[slot] = "[TEHSIL]"
                 changed = True
-        elif kl in ("district", "jila", "distt") and isinstance(val, str):
+        elif (ph == "DISTRICT" or kl in ("district", "jila", "distt")) and isinstance(val, str):
             if not plan.keep_district and val.strip() and val != "[DISTRICT]":
                 container[slot] = "[DISTRICT]"
                 changed = True
-        elif kl == "dob" and isinstance(val, str) and val != "[DOB]":
+        elif (ph == "DOB" or kl == "dob") and isinstance(val, str) and val != "[DOB]":
             container[slot] = "[DOB]"
             changed = True
         elif isinstance(val, str) and (
-            kl in _CLINICAL_DATE_KEYS
+            ph in ("CLINICAL_DATE", "DATE")
+            or kl in _CLINICAL_DATE_KEYS
             or "date" in kl
             or kl in ("collected", "reported_on", "registered_on", "exported_at", "generated", "generated_at")
         ):
@@ -316,7 +340,7 @@ def _apply_privacy_dict_obj(
             if b64_transformed != val:
                 container[slot] = b64_transformed
                 changed = True
-            elif kl in ("notes", "note", "remarks", "line", "address_note", "complaints", "history") or "address" in kl:
+            elif ph in ("FREE_TEXT", "ADDRESS", "LOCALITY", "VILLAGE", "LANDMARK") or kl in ("notes", "note", "remarks", "line", "address_note", "complaints", "history") or "address" in kl:
                 g_txt, c_t = generalize_text(val, plan, month_first=month_first)
                 if c_t:
                     container[slot] = g_txt

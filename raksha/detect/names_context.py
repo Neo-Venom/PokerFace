@@ -4,16 +4,29 @@ from __future__ import annotations
 import re
 
 from raksha.detect.identifiers import Span, resolve_overlaps
-from raksha.detect.normalize import NormalizedView, build_normalized_view
+from raksha.detect.normalize import (
+    DEVA_LETTER_CLASS,
+    LATIN_LETTER_CLASS,
+    LATIN_UPPER_CLASS,
+    NormalizedView,
+    build_normalized_view,
+    fold_latin_accents,
+    is_deva_char,
+    is_upper_or_deva_start,
+)
 
-# Devanagari letters excluding danda (U+0964, U+0965) and digits (U+0966..U+096F)
-_DL = r"\u0900-\u0963\u0970-\u097F"
-_NL = rf"A-Z{_DL}"
-_AL = rf"A-Za-z{_DL}'\-"
+# Unicode-aware Devanagari and Latin (including composed NFC accented letters; NFD is NFC-normalized first)
+_DL = DEVA_LETTER_CLASS
+_LU = LATIN_UPPER_CLASS
+_LL = LATIN_LETTER_CLASS
+_NL = rf"{_LU}{_DL}"
+_AL = rf"{_LL}{_DL}'\-"
 
 # Single name token: single-letter initial (only when followed by another token), Md./Mohd., or word without trailing sentence dot
-_TOK = rf"(?:[A-Z{_DL}]\.(?=[ \t]+[{_NL}])|(?:Md|Mohd|Mr|Mrs|Ms)\.|[{_NL}][{_AL}]{{0,24}})"
+_TOK = rf"(?:[{_NL}]\.(?=[ \t]+[{_NL}])|(?:Md|Mohd|Mr|Mrs|Ms)\.|[{_NL}][{_AL}]{{0,24}})"
+_SYNTH_TOK = rf"(?:[{_LU}][a-z\u00DF-\u024F\u1E00-\u1EFF]{{4,20}}\d{{1,2}}[a-z]{{0,4}}|{_TOK})"
 _NAME_SEQ = rf"{_TOK}(?:[ \t]+{_TOK}){{0,3}}"
+_SLOT_SEQ = rf"{_SYNTH_TOK}(?:[ \t]+{_SYNTH_TOK}){{0,3}}"
 _SHORT_SEQ = rf"{_TOK}(?:[ \t]+{_TOK}){{0,2}}"
 
 # Protected doctor patterns (never redacted; strictly capitalized/Devanagari tokens after Dr./डॉ)
@@ -40,8 +53,11 @@ _STOP_NAME_WORDS = {
     "next", "morning", "evening", "day", "days", "week", "weeks", "month", "months",
     "opd", "ipd", "uhid", "mrn", "dob", "age", "sex", "mob", "mobile", "phone",
     "visited", "discharged", "informed", "treated", "conservatively", "referred",
+    "sector", "phase", "colony", "quarter", "qtr", "flat", "plot", "consent", "signed",
+    "referral", "note", "stage", "grade", "type", "group", "code", "level", "vitamin", "covid", "sars",
     "मरीज़", "रोगी", "डॉक्टर", "वार्ड", "निदान", "बुखार", "दर्द", "दवाई", "सारांश",
     "अस्पताल", "तारीख", "आयु", "उम्र", "ग्राम", "पता", "मोबाइल", "छुट्टी", "भर्ती", "है",
+    "नोट", "रेफरल", "संदर्भ", "लाभार्थी",
 }
 
 _CLINICAL_COMPLAINT_WORDS = {
@@ -61,19 +77,29 @@ _HONORIFIC_SUFFIXES = {
 
 # --------------------------------------------------------------------------- name & address triggers
 _PATIENT_LABEL_RE = re.compile(
-    rf"(?:Patient(?:'s)?[ \t]+Name|Pt\.?[ \t]+Name|Beneficiary|Client[ \t]+Name|Subject[ \t]+Name|Name|मरीज़[ \t]+का[ \t]+नाम|रोगी[ \t]+का[ \t]+नाम|नाम)"
-    rf"[ \t]*[:\-][ \t]*"
-    rf"({_NAME_SEQ}|[{_NL}][{_AL}]+,[ \t]*[{_NL}][{_AL}]+)"
-    rf"(?=[ \t]{{2,}}|[ \t]+(?:Age|Sex|Gender|DOB|UHID|MRN|Reg|IPD|S/o|D/o|W/o|आयु|उम्र|लिंग|पंजीकरण|पिता|पति)\b|[ \t]*[,;\.\(\n\r]|$)",
-    re.I,
+    rf"(?<!डॉ\.)(?<!Dr\.)(?i:"
+    rf"(?:Patient(?:'s)?|Pt\.?|Beneficiary|Client|Subject|Participant|Referral|लाभार्थी|रेफरल|संदर्भ|मरीज़|रोगी)"
+    rf"(?:[ \t]+(?:का[ \t]+नाम|नाम|नोट|विवरण|Name|Note|Details))?"
+    rf"|Name|नाम"
+    rf")[ \t]*[:\-][ \t]*"
+    rf"({_SLOT_SEQ}|[{_NL}][{_AL}]+,[ \t]*[{_NL}][{_AL}]+)"
+    rf"(?=[ \t]{{2,}}|[ \t]+(?i:Age|Sex|Gender|DOB|UHID|MRN|Reg|IPD|S/o|D/o|W/o|आयु|उम्र|लिंग|पंजीकरण|पिता|पति|मोबाइल)\b|[ \t]+(?![{_NL}])|[ \t]*[,;\.\(\)\n\r]|$)"
+)
+_PATIENT_UNDELIM_RE = re.compile(
+    rf"(?<!डॉ\.)(?<!Dr\.)\b(?:Patient|Pt\.?)[ \t]+({_SLOT_SEQ})"
+    rf"(?=[ \t]*[\(\n\r,;]|[ \t]+(?:ko|ne|ki|ka|se|who|visited|came|is|was|has|had|presented|signed|discharged)\b|[ \t]+(?![{_NL}])|$)"
 )
 
-# Relative triggers
+# Relative triggers (delimited "Attendant: <Name>" and undelimited "Attendant <Name> (...)")
 _REL_LABEL_RE = re.compile(
-    rf"(?:(?:[SDW][ \t]*/[ \t]*[Oo])|(?:पिता[ \t]+का[ \t]+नाम|पति[ \t]+का[ \t]+नाम|माता[ \t]+का[ \t]+नाम|अभिभावक)[ \t]*[:\-]?|(?:Attendant|Caretaker|Guardian|Next[ \t]+of[ \t]+Kin)(?:[ \t]*\([^)]*\))?[ \t]*[:\-])"
-    rf"[ \t]*({_NAME_SEQ})"
-    rf"(?=[ \t]*[,.;\)\n\r]|[ \t]+(?:discharged|informed|Mob|Mobile|Phone|को|से)\b|$)",
-    re.I,
+    rf"(?i:(?:[SDW][ \t]*/[ \t]*[Oo])|(?:पिता[ \t]+का[ \t]+नाम|पति[ \t]+का[ \t]+नाम|माता[ \t]+का[ \t]+नाम|अभिभावक|संरक्षक)[ \t]*[:\-]?"
+    rf"|(?:Attendant|Caretaker|Guardian|Next[ \t]+of[ \t]+Kin)(?:[ \t]*\([^)]*\))?[ \t]*[:\-])"
+    rf"[ \t]*({_SLOT_SEQ})"
+    rf"(?=[ \t]*[,.;\(\)\n\r]|[ \t]+(?i:discharged|informed|signed|ne|ko|ke|ki|se|Mob|Mobile|Phone|को|से|ने)\b|[ \t]+(?![{_NL}])|$)"
+)
+_REL_UNDELIM_RE = re.compile(
+    rf"\b(?i:Attendant|Caretaker|Guardian|Accompanied[ \t]+by)[ \t]+(?!(?i:physician|doctor|nurse|staff|dr\.?|डॉ))({_SLOT_SEQ})"
+    rf"(?=[ \t]*[,.;\(\)\n\r]|[ \t]+(?i:ne|ko|ke|ki|se|signed|discharged|informed|Mob|Mobile|Phone|को|से|ने)\b|[ \t]+(?![{_NL}])|$)"
 )
 
 # Attendant inline S/o D/o W/o inside parentheses or sentences
@@ -83,7 +109,7 @@ _REL_INLINE_RE = re.compile(
 
 # Prefix honorifics (Mr/Mrs/Ms/Smt/Shri/श्री/श्रीमती) and "Pt. <Capitalized Name>"
 _PREFIX_HONORIFIC_RE = re.compile(
-    rf"(?<!\w)(?:Mr\.?|Mrs\.?|Ms\.?|Miss|Smt\.?|Shri|Shree|Sri|श्री|श्रीमती|सुश्री|(?-i:Pt\.?))[ \t]+({_NAME_SEQ})"
+    rf"(?<!\w)(?:Mr\.?|Mrs\.?|Ms\.?|Miss|Smt\.?|Shri|Shree|Sri|श्री|श्रीमती|सुश्री|(?-i:Pt\.?))[ \t]+({_SLOT_SEQ})"
 )
 
 # Hinglish honorific/relationship suffixes ("Rohan ji", "Kiran sahab", "Priya Bhaiya", "Sohan Mama")
@@ -110,8 +136,11 @@ _LEADING_REL_SUBJECT_RE = re.compile(
     rf"(?:^|\n)[ \t]*({_SHORT_SEQ})[ \t]*,[ \t]*(?=[SDWC]/[Oo]\b)"
 )
 _FOR_PATIENT_RE = re.compile(
-    rf"\b(?:note[ \t]+for|called[ \t]+by|witnessed[ \t]+by|from)[ \t]+({_SHORT_SEQ})(?=['., \t\n]|$)",
+    rf"\b(?:note[ \t]+for|prepared[ \t]+for|called[ \t]+by|witnessed[ \t]+by|from)[ \t]+({_SHORT_SEQ})(?=['.,(\s\n]|$)",
     re.I,
+)
+_CONSENT_PERSON_RE = re.compile(
+    rf"\b(?i:consent[ \t]+(?:of|by|from|signed[ \t]+by)|signed[ \t]+by|on[ \t]+behalf[ \t]+of)[ \t]+({_SLOT_SEQ})(?=['.,;\(\)\n]|[ \t]+(?![{_NL}])|$)"
 )
 _POSSESSIVE_NAME_RE = re.compile(
     rf"(?:^|[ \t])({_SHORT_SEQ})'s[ \t]+(?:attendant|family|father|mother|wife|husband|son|daughter|report|samples?)\b"
@@ -125,9 +154,9 @@ _TIMED_NOTE_NAME_RE = re.compile(
     rf"(?:^|\n)[ \t]*\d{{1,2}}:\d{{2}}[ \t]*[-–][ \t]*({_NAME_SEQ})(?=[ \t]*(?:[-–][ \t]*K/C/O|\(|,|\n|$))"
 )
 
-# Initials pattern like "K. R. Menon", "A. Nair", "Md. Tariq"
+# Initials pattern like "K. R. Menon", "A. Nair", "Md. Tariq", "J.-P. Élodie"
 _INITIALS_NAME_RE = re.compile(
-    r"(?<!\w)(?:[A-Z]\.[ \t]*){1,2}[A-Z][a-z]{2,20}(?!\w)"
+    rf"(?<!\w)(?:[{_LU}]\.[ \t]*){{1,2}}[{_LU}][a-z\u00DF-\u024F\u1E00-\u1EFF\-]{{2,20}}(?!\w)"
 )
 
 # C/O ambiguity: scan candidate "C/O <phrase>" and resolve multi-token context
@@ -141,39 +170,60 @@ _VILLAGE_LINE_RE = re.compile(
     r"(?i)(?:\bVill(?:age)?\.?|\bGram|ग्राम)[ \t]*[:\-][ \t]*([^\n\r,;]+)"
 )
 
-# Address sub-components (both English and Devanagari)
+# Address sub-components (English, residential quarters/colonies, and Devanagari)
 _FREE_ADDR_COMPONENTS: list[tuple[str, re.Pattern]] = [
-    ("HOUSE", re.compile(r"(?i)\b(?:H\.?\s*No\.?|House(?:\s+No\.?)?|Makan\s+No\.?)\s*[\dA-Za-z/-]+")),
+    ("HOUSE", re.compile(r"(?i)\b(?:H\.?\s*No\.?|House(?:\s+No\.?)?|Makan\s+No\.?|Qtr\.?|Quarter|Flat(?:\s+No\.?)?|Plot(?:\s+No\.?)?|Door(?:\s+No\.?)?)[\s.\-#:/]*[\dA-Za-z/-]*\d[\dA-Za-z/-]*")),
     ("HOUSE", re.compile(r"मकान\s*(?:नं\.?|सं\.?)\s*[\dA-Za-z/-]+")),
     ("LOCALITY", re.compile(r"(?i)\bWard\s*(?:No\.?)?\s*\d+")),
     ("LOCALITY", re.compile(r"वार्ड\s*(?:नं\.?)?\s*\d+")),
+    ("LOCALITY", re.compile(r"(?i)\bSector\s*[-#]?\s*[A-Za-z0-9]+(?:\s+(?:Colony|Phase|Extension|Enclave|Block))?")),
     ("LOCALITY", re.compile(r"(?i)\bMohalla\s+[^,\n]+")),
+    ("LOCALITY", re.compile(rf"\b[{_LU}][a-zA-Z0-9\u00DF-\u024F]*(?:\s+[{_LU}0-9][a-zA-Z0-9\u00DF-\u024F]*){{0,2}}\s+(?:Colony|Nagar|Vihar|Enclave|Puram|Extension|Basti|Tola|Layout)\b")),
     ("LOCALITY", re.compile(r"मोहल्ला\s+[^,\n]+")),
     ("LANDMARK", re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind|beside)\s+[^,\n]+")),
     ("LANDMARK", re.compile(r"[^,\n]+?\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
     ("VILLAGE", re.compile(r"(?i)\b(?:Vill\.?|Village|Gram)\s+[^,\n\-]+")),
     ("VILLAGE", re.compile(r"ग्राम\s+[^,\n\-]+")),
     # Bare village name right before ", Tehsil ..." or ", तहसील ..."
-    ("VILLAGE", re.compile(rf"(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Ward|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([{_NL}][^\n,]+?)(?=,\s*(?:Tehsil|तहसील)\b)", re.I)),
+    ("VILLAGE", re.compile(rf"(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Qtr|Quarter|Flat|Plot|Ward|Sector|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([{_NL}][^\n,]+?)(?=,\s*(?:Tehsil|तहसील)\b)", re.I)),
     ("PIN", re.compile(r"(?<!\d)[1-8]\d{5}(?!\d)")),
 ]
 
+_SYNTHETIC_CANARY_TOK_RE = re.compile(r"^[A-Z][a-z]{4,20}\d{1,2}[a-z]{0,4}$")
 
-def _is_valid_name_candidate(cand: str) -> bool:
+
+def _is_valid_name_candidate(cand: str, allow_synthetic_canary: bool = False) -> bool:
     s = cand.strip(" .,:;-'\"")
     if not s or len(s) < 2 or len(s) > 60:
-        return False
-    if any(ch.isdigit() for ch in s):
         return False
     toks = [t.strip(".,'\"") for t in s.split() if t.strip(".,'\"")]
     if not toks or len(toks) > 4:
         return False
-    non_stop = [t for t in toks if t.casefold() not in _STOP_NAME_WORDS and t.casefold() not in _HONORIFIC_SUFFIXES]
+    has_digit = any(ch.isdigit() for ch in s)
+    if has_digit:
+        if not allow_synthetic_canary:
+            return False
+        alpha_toks = [t for t in toks if not any(ch.isdigit() for ch in t)]
+        digit_toks = [t for t in toks if any(ch.isdigit() for ch in t)]
+        if len(toks) >= 2 and not alpha_toks:
+            return False
+        for dt in digit_toks:
+            folded = fold_latin_accents(dt)
+            if not _SYNTHETIC_CANARY_TOK_RE.match(folded):
+                return False
+            base = re.sub(r"\d+", "", folded).casefold()
+            if base in _STOP_NAME_WORDS or base in _CLINICAL_COMPLAINT_WORDS:
+                return False
+    non_stop = [
+        t for t in toks
+        if re.sub(r"\d+", "", fold_latin_accents(t)).casefold() not in _STOP_NAME_WORDS
+        and t.casefold() not in _HONORIFIC_SUFFIXES
+    ]
     if not non_stop:
         return False
     if any(t.casefold() in _CLINICAL_COMPLAINT_WORDS for t in toks):
         return False
-    return True
+    return any(is_upper_or_deva_start(t) for t in toks)
 
 
 def _resolve_care_of(phrase: str, before_ctx: str) -> str | None:
@@ -187,10 +237,10 @@ def _resolve_care_of(phrase: str, before_ctx: str) -> str | None:
     if re.search(r"(?i)\b(?:for|since|x)\s+\d+", phrase):
         return None
     addr_hint = bool(re.search(r"(?i)(?:address|attendant|पता|guardian)", before_ctx[-40:]))
-    right_addr_hint = bool(re.search(r"(?i),\s*(?:H\.?\s*No|Makan|House|Ward|Mohalla|मकान|वार्ड|मोहल्ला)", phrase))
+    right_addr_hint = bool(re.search(r"(?i),\s*(?:H\.?\s*No|Makan|House|Qtr|Flat|Ward|Sector|Mohalla|मकान|वार्ड|मोहल्ला)", phrase))
     toks = first_seg.split()
     if 1 <= len(toks) <= 3 and _is_valid_name_candidate(first_seg):
-        if addr_hint or right_addr_hint or all(t[0].isupper() or ("\u0900" <= t[0] <= "\u097F") for t in toks):
+        if addr_hint or right_addr_hint or all(is_upper_or_deva_start(t) for t in toks):
             return first_seg
     return None
 
@@ -232,16 +282,24 @@ def detect_context_name_and_address_spans(
             return
         spans.append(Span(os_, oe_, label, text[os_:oe_], source=src))
 
-    # 1. Explicit Patient Name labels
+    # 1. Explicit Patient Name labels & undelimited Patient/Pt. <Name>
     for m in _PATIENT_LABEL_RE.finditer(norm_text):
         cand = m.group(1).strip()
-        if _is_valid_name_candidate(cand):
+        if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
+            add_orig_span(m.start(1), m.start(1) + len(cand), "PATIENT_NAME")
+    for m in _PATIENT_UNDELIM_RE.finditer(norm_text):
+        cand = m.group(1).strip()
+        if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
             add_orig_span(m.start(1), m.start(1) + len(cand), "PATIENT_NAME")
 
-    # 2. Explicit Relative labels
+    # 2. Explicit Relative labels (delimited, undelimited Attendant/Caretaker, and S/o inline)
     for m in _REL_LABEL_RE.finditer(norm_text):
         cand = m.group(1).strip()
-        if _is_valid_name_candidate(cand):
+        if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
+            add_orig_span(m.start(1), m.start(1) + len(cand), "RELATIVE_NAME")
+    for m in _REL_UNDELIM_RE.finditer(norm_text):
+        cand = m.group(1).strip()
+        if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
             add_orig_span(m.start(1), m.start(1) + len(cand), "RELATIVE_NAME")
     for m in _REL_INLINE_RE.finditer(norm_text):
         cand = m.group(2).strip()
@@ -259,7 +317,7 @@ def detect_context_name_and_address_spans(
     # 4. Prefix honorifics
     for m in _PREFIX_HONORIFIC_RE.finditer(norm_text):
         cand = m.group(1).strip()
-        if _is_valid_name_candidate(cand):
+        if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
             add_orig_span(m.start(1), m.start(1) + len(cand), "PATIENT_NAME")
 
     # 5. Hinglish honorific suffixes
@@ -275,7 +333,11 @@ def detect_context_name_and_address_spans(
         if _is_valid_name_candidate(cand):
             add_orig_span(m.start(1), m.start(1) + len(cand), "RELATIVE_NAME")
 
-    # 7. Report of <Name>, Leading "<Name>, W/o", etc.
+    # 7. Consent signatures, Report of <Name>, Leading "<Name>, W/o", etc.
+    for m in _CONSENT_PERSON_RE.finditer(norm_text):
+        cand = m.group(1).strip()
+        if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
+            add_orig_span(m.start(1), m.start(1) + len(cand), "PATIENT_NAME")
     for rx, lbl in (
         (_REPORT_OF_RE, "PATIENT_NAME"),
         (_LEADING_REL_SUBJECT_RE, "PATIENT_NAME"),

@@ -107,6 +107,19 @@ def _is_safe_context(norm_text: str, ns: int, ne: int, surface: str, label: str,
     return False
 
 
+def _qa_fold_latin(text: str) -> str:
+    """Fold composed or decomposed Latin accents to ASCII inside independent QA matcher."""
+    out: list[str] = []
+    for ch in unicodedata.normalize("NFKC", text):
+        if "\u0900" <= ch <= "\u097F":
+            out.append(ch)
+        else:
+            for sub in unicodedata.normalize("NFKD", ch):
+                if not unicodedata.combining(sub):
+                    out.append(sub)
+    return "".join(out)
+
+
 class _CompiledSurfaceMatcher:
     """Precompiles all known PII surfaces into a single alternation regex once per QA scan."""
 
@@ -115,17 +128,17 @@ class _CompiledSurfaceMatcher:
         ordered_norms: list[str] = []
         for surf, lbl in sorted(known_surfaces.items(), key=lambda kv: (-len(kv[0]), kv[0])):
             s_norm, _ = _qa_norm_with_map(surf)
-            s_low = s_norm.casefold().strip()
-            if len(s_low) < 4 or s_low in self.surface_to_label:
-                continue
-            self.surface_to_label[s_low] = lbl
-            ordered_norms.append(re.escape(s_low))
+            for variant in {s_norm.casefold().strip(), _qa_fold_latin(s_norm).casefold().strip()}:
+                if len(variant) < 4 or variant in self.surface_to_label:
+                    continue
+                self.surface_to_label[variant] = lbl
+                ordered_norms.append(re.escape(variant))
 
         if ordered_norms:
             # Sort longest normalized surface first so longest match wins in regex alternation
             ordered_norms.sort(key=len, reverse=True)
             self.pattern: re.Pattern | None = re.compile(
-                rf"(?<![A-Za-z0-9\u0900-\u097F])(?:{'|'.join(ordered_norms)})(?![A-Za-z0-9\u0900-\u097F])"
+                rf"(?<![A-Za-z0-9\u00C0-\u024F\u1E00-\u1EFF\u0900-\u097F])(?:{'|'.join(ordered_norms)})(?![A-Za-z0-9\u00C0-\u024F\u1E00-\u1EFF\u0900-\u097F])"
             )
         else:
             self.pattern = None
@@ -237,13 +250,29 @@ def _rescrub_json_iterative(
     doctor_surfaces: set[str],
     summary: AuditSummary,
 ) -> tuple[object, bool]:
-    """Iteratively scan and re-scrub JSON string leaves without recursion limit risk."""
+    """Iteratively scan and re-scrub JSON keys and string leaves without recursion limit risk."""
     changed = False
     root = {"r": data}
     stack: list[tuple[object, object, object]] = [(root, "r", data)]
     while stack:
         parent, slot, val = stack.pop()
         if isinstance(val, dict):
+            key_renames: list[tuple[object, str]] = []
+            for k in list(val.keys()):
+                if isinstance(k, str):
+                    new_k, k_ch = _rescrub_string_and_b64(k, known_surfaces, doctor_surfaces, summary)
+                    if k_ch:
+                        key_renames.append((k, new_k))
+            for old_k, new_k in key_renames:
+                # Rebuild dict preserving key order while merging under sanitized key cleanly
+                rebuilt = {}
+                for k, v in val.items():
+                    tk = new_k if k == old_k else k
+                    if tk not in rebuilt:
+                        rebuilt[tk] = v
+                val.clear()
+                val.update(rebuilt)
+                changed = True
             for k, v in val.items():
                 stack.append((val, k, v))
         elif isinstance(val, list):

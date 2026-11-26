@@ -2,17 +2,27 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from raksha.detect.identifiers import Span, resolve_overlaps
 from raksha.detect.normalize import (
+    DEVA_LETTER_CLASS,
+    LATIN_LETTER_CLASS,
     NormalizedView,
     build_normalized_view,
     deva_word_to_latin,
+    fold_latin_accents,
     latin_word_to_deva,
     phonetic_key,
 )
-from raksha.detect.structured import _is_fhir_bundle, infer_column_type
+from raksha.detect.structured import (
+    _is_fhir_bundle,
+    infer_column_type,
+    infer_dict_schema,
+    infer_table_schema,
+    is_non_patient_table_content,
+)
 
 # General pan-Indian common surnames/titles/locality suffixes that must NOT match standalone as single tokens
 _GENERIC_SINGLE_TOKENS = {
@@ -21,8 +31,8 @@ _GENERIC_SINGLE_TOKENS = {
     "kalan", "khurd", "pur", "ganj", "garh", "nagar", "bazar",
 }
 
-_DEVA_RE = re.compile(r"[\u0900-\u0963\u0970-\u097F]")
-_WORD_SPAN_RE = re.compile(r"[A-Za-z\u0900-\u0963\u0970-\u097F][A-Za-z\u0900-\u0963\u0970-\u097F'\-\.]*")
+_DEVA_RE = re.compile(rf"[{DEVA_LETTER_CLASS}]")
+_WORD_SPAN_RE = re.compile(rf"[{LATIN_LETTER_CLASS}{DEVA_LETTER_CLASS}][{LATIN_LETTER_CLASS}{DEVA_LETTER_CLASS}'\-\.]*")
 
 
 @dataclass
@@ -60,7 +70,7 @@ class AliasRegistry:
             self.doctor_phonetic.add(pk)
 
     def add_person_name(self, raw_name: str, role: str = "patient") -> None:
-        s = raw_name.strip(" .,:;-'\"")
+        s = unicodedata.normalize("NFC", raw_name).strip(" .,:;-'\"")
         s = re.sub(r"(?i)^(?:[SDWC]/[Oo]|Mr\.?|Mrs\.?|Ms\.?|Smt\.?|Shri|श्री|श्रीमती)\s+", "", s).strip()
         if not s or len(s) < 3 or any(ch.isdigit() for ch in s):
             return
@@ -84,30 +94,36 @@ class AliasRegistry:
             if rev_pk:
                 self.phonetic_phrases.setdefault(rev_pk, (label, role, len(toks)))
 
-        # Register distinctive first token (given name) for single-token proposal in free text
+        # Register distinctive first token (given name + accent-folded variant) for free text/filename matching
         if toks:
             first = toks[0].strip(".").casefold()
-            if len(first) >= 4 and first not in _GENERIC_SINGLE_TOKENS:
-                self.first_names.setdefault(first, (label, role))
-                fpk = phonetic_key(first)
-                if fpk and len(fpk) >= 3:
-                    self.first_names.setdefault(fpk, (label, role))
+            first_ascii = fold_latin_accents(toks[0]).strip(".").casefold()
+            for cand_f in {first, first_ascii}:
+                if len(cand_f) >= 4 and cand_f not in _GENERIC_SINGLE_TOKENS:
+                    self.first_names.setdefault(cand_f, (label, role))
+            fpk = phonetic_key(first)
+            if fpk and len(fpk) >= 3:
+                self.first_names.setdefault(fpk, (label, role))
 
     def _expand_name_variants(self, s: str) -> set[str]:
-        out: set[str] = {s.casefold()}
-        if _DEVA_RE.search(s):
-            lat = " ".join(deva_word_to_latin(w) for w in s.split())
+        s_nfc = unicodedata.normalize("NFC", s)
+        out: set[str] = {s_nfc.casefold(), fold_latin_accents(s_nfc).casefold()}
+        if _DEVA_RE.search(s_nfc):
+            lat = " ".join(deva_word_to_latin(w) for w in s_nfc.split())
             if lat.strip():
                 out.add(lat.strip().casefold())
         else:
-            deva = " ".join(latin_word_to_deva(w) for w in s.split())
+            ascii_s = fold_latin_accents(s_nfc)
+            deva = " ".join(latin_word_to_deva(w) for w in ascii_s.split())
             if deva.strip():
                 out.add(deva.strip().casefold())
-            toks = s.split()
+            toks = s_nfc.split()
+            atoks = ascii_s.split()
             if len(toks) >= 2:
                 out.add(" ".join(reversed(toks)).casefold())
-                if toks[0].casefold().rstrip(".") in ("mohammad", "mohammed", "muhammad", "mohd", "md"):
-                    rest = " ".join(toks[1:]).casefold()
+                out.add(" ".join(reversed(atoks)).casefold())
+                if atoks[0].casefold().rstrip(".") in ("mohammad", "mohammed", "muhammad", "mohd", "md"):
+                    rest = " ".join(atoks[1:]).casefold()
                     for prefix in ("mohammad", "mohammed", "mohd.", "mohd", "md.", "md"):
                         out.add(f"{prefix} {rest}")
         return {x for x in out if len(x) >= 3}
@@ -238,21 +254,26 @@ class AliasRegistry:
         return self.propose_spans(norm_fn, view=nv, allow_single_first_name=True)
 
 
-def build_alias_registry(parsed_items: list[tuple[str, str, object]]) -> AliasRegistry:
-    """Populate run-level AliasRegistry from high-confidence structured fields across all ingested files."""
+def build_alias_registry(
+    parsed_items: list[tuple[str, str, object]],
+    clinical_lexicon=None,
+) -> AliasRegistry:
+    """Populate run-level AliasRegistry via unified compositional schema inference across all files."""
+    from raksha.detect.names_context import detect_context_name_and_address_spans
+    from raksha.detect.protected import resolve_pii_vs_protected
+
     reg = AliasRegistry()
 
     for _rel, fmt, payload in parsed_items:
         if fmt in ("csv", "tsv") and isinstance(payload, list) and len(payload) > 1:
             header, body = payload[0], payload[1:]
-            col_types = [
-                infer_column_type([r[i] if i < len(r) else "" for r in body], header=h)
-                for i, h in enumerate(header)
-            ]
-            # Handle split FirstName + LastName columns together
-            fn_idx = next((i for i, h in enumerate(header) if h.strip().casefold() in ("firstname", "first_name", "fname")), None)
-            ln_idx = next((i for i, h in enumerate(header) if h.strip().casefold() in ("lastname", "last_name", "lname")), None)
-            doc_cols = [i for i, h in enumerate(header) if any(w in h.casefold() for w in ("doctor", "ref_doctor", "consultant"))]
+            ts = infer_table_schema(header, body)
+            if is_non_patient_table_content(header, body, ts):
+                continue
+            col_types = ts.col_types
+            fn_idx = ts.first_name_cols[0] if ts.first_name_cols else None
+            ln_idx = ts.last_name_cols[0] if ts.last_name_cols else None
+            doc_cols = ts.doctor_cols
 
             for row in body:
                 for i in doc_cols:
@@ -270,7 +291,7 @@ def build_alias_registry(parsed_items: list[tuple[str, str, object]]) -> AliasRe
                     val = row[i].strip()
                     if not val:
                         continue
-                    if ctype == "PATIENT_NAME":
+                    if ctype == "PATIENT_NAME" and i not in (fn_idx, ln_idx):
                         reg.add_person_name(val, role="patient")
                     elif ctype == "RELATIVE_NAME":
                         reg.add_person_name(val, role="relative")
@@ -317,40 +338,85 @@ def build_alias_registry(parsed_items: list[tuple[str, str, object]]) -> AliasRe
                             if isinstance(ident, dict) and isinstance(ident.get("value"), str):
                                 reg.add_identifier(ident["value"], "MRN")
             else:
-                # Iterative extraction from structured JSON dicts
+                # Iterative extraction from structured JSON dicts using infer_dict_schema
                 stack: list[tuple[object, str]] = [(payload, "")]
                 while stack:
                     node, pk = stack.pop()
                     if isinstance(node, dict):
-                        # Compound name object {first, last, local}
-                        if pk == "name" or ("first" in node and "last" in node):
-                            first = str(node.get("first") or "").strip()
-                            last = str(node.get("last") or "").strip()
-                            loc = str(node.get("local") or "").strip()
-                            if f"{first} {last}".strip():
-                                reg.add_person_name(f"{first} {last}".strip(), role="patient")
-                            if loc:
-                                reg.add_person_name(loc, role="patient")
+                        ds = infer_dict_schema(node, parent_key=pk)
+                        # Handle nested person/relative name objects ({given_nm, sur_nm, local} or {first, last})
+                        for sub_k, role_tag in ds.sub_dict_roles.items():
+                            sub_node = node.get(sub_k)
+                            if isinstance(sub_node, dict):
+                                sub_ds = infer_dict_schema(sub_node, parent_key=sub_k)
+                                role = "relative" if role_tag == "RELATIVE_NAME_OBJ" else "patient"
+                                f_vals = [
+                                    str(sub_node[ck]).strip()
+                                    for ck, ph in sub_ds.part_hints.items()
+                                    if ph in ("NAME_FIRST", "REL_NAME_FIRST") and isinstance(sub_node.get(ck), str)
+                                ]
+                                l_vals = [
+                                    str(sub_node[ck]).strip()
+                                    for ck, ph in sub_ds.part_hints.items()
+                                    if ph in ("NAME_LAST", "REL_NAME_LAST") and isinstance(sub_node.get(ck), str)
+                                ]
+                                loc_vals = [
+                                    str(sub_node[ck]).strip()
+                                    for ck, ph in sub_ds.part_hints.items()
+                                    if ph == "NAME_LOCAL" and isinstance(sub_node.get(ck), str)
+                                ]
+                                full = " ".join(x for x in f_vals + l_vals if x).strip()
+                                if full:
+                                    reg.add_person_name(full, role=role)
+                                for lv in loc_vals:
+                                    if lv:
+                                        reg.add_person_name(lv, role=role)
+                                if not full and not loc_vals:
+                                    raw_parts = [str(sv).strip() for sv in sub_node.values() if isinstance(sv, str) and sv.strip()]
+                                    if raw_parts:
+                                        reg.add_person_name(" ".join(raw_parts), role=role)
+
                         for k, v in node.items():
                             kl = str(k).casefold()
-                            if isinstance(v, str) and v.strip():
-                                if kl in ("doctor", "referred_by", "ref_doctor", "consultant"):
-                                    reg.add_doctor(v)
-                                elif kl in ("patient_name", "naam") or (kl == "name" and pk in ("patient", "raised_by")):
-                                    reg.add_person_name(v, role="patient")
-                                elif kl == "name" and pk in ("guardian", "relative"):
-                                    reg.add_person_name(v, role="relative")
-                                elif kl in ("uhid", "patient_ref", "hospital_uhid", "mrn"):
-                                    reg.add_identifier(v, "MRN")
-                                elif kl in ("phone", "mobile", "callback"):
-                                    reg.add_identifier(v, "PHONE")
-                                elif kl == "village":
-                                    reg.add_village(v)
-                            elif isinstance(v, (dict, list)):
-                                stack.append((v, kl))
+                            if isinstance(v, (dict, list)):
+                                if k not in ds.sub_dict_roles:
+                                    stack.append((v, kl))
+                                continue
+                            if v is None:
+                                continue
+                            vs = str(v).strip()
+                            if not vs:
+                                continue
+                            ph = ds.part_hints.get(str(k))
+                            ft = ds.field_types.get(str(k))
+                            if ph == "DOCTOR":
+                                reg.add_doctor(vs)
+                            elif ft == "PATIENT_NAME":
+                                reg.add_person_name(vs, role="patient")
+                            elif ft == "RELATIVE_NAME":
+                                reg.add_person_name(vs, role="relative")
+                            elif ft in ("MRN", "PHONE"):
+                                reg.add_identifier(vs, ft)
+                            elif ft == "VILLAGE":
+                                reg.add_village(vs)
                     elif isinstance(node, list):
                         for it in node:
                             if isinstance(it, (dict, list)):
                                 stack.append((it, pk))
+
+        elif fmt == "txt" and isinstance(payload, str):
+            for m_dr in re.finditer(rf"(?i)\b(?:dr\.?|डॉ\.?|consultant)\s+([{LATIN_LETTER_CLASS}{DEVA_LETTER_CLASS}][{LATIN_LETTER_CLASS}{DEVA_LETTER_CLASS}.'\-]+(?:\s+[{LATIN_LETTER_CLASS}{DEVA_LETTER_CLASS}.'\-]+){{1,2}})", payload):
+                reg.add_doctor(m_dr.group(1))
+            nv = build_normalized_view(payload)
+            prot = clinical_lexicon.find_spans(payload, view=nv) if clinical_lexicon is not None else []
+            ctx_spans = resolve_pii_vs_protected(
+                detect_context_name_and_address_spans(payload, view=nv, protected_spans=prot),
+                prot,
+            )
+            for sp in ctx_spans:
+                if sp.label in ("PATIENT_NAME", "RELATIVE_NAME"):
+                    toks = [t for t in sp.text.strip().split() if len(t) >= 2]
+                    if len(toks) >= 2:
+                        reg.add_person_name(sp.text, role="relative" if sp.label == "RELATIVE_NAME" else "patient")
 
     return reg
