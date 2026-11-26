@@ -212,6 +212,21 @@ class _AnonIndex:
         return len(seen)
 
 
+# Country / state / region words are not districts (a record saying "Uttar Pradesh, India" has no district vote)
+_REGION_WORDS = frozenset(re.sub(r"[^a-z]", "", w) for w in (
+    "india", "bharat", "pradesh", "uttar", "state", "uttar pradesh", "up", "bihar", "madhya pradesh", "mp",
+    "rajasthan", "maharashtra", "delhi", "new delhi", "haryana", "punjab", "uttarakhand", "himachal pradesh",
+    "jharkhand", "chhattisgarh", "odisha", "orissa", "west bengal", "bengal", "gujarat", "karnataka", "tamil nadu",
+    "kerala", "andhra pradesh", "telangana", "assam", "jammu and kashmir", "goa", "tripura", "manipur", "meghalaya",
+    "mizoram", "nagaland", "sikkim", "arunachal pradesh",
+))
+
+
+def _is_region(token: str) -> bool:
+    t = re.sub(r"[^a-z]", "", token.lower())
+    return t in _REGION_WORDS or token.strip() in ("उत्तर प्रदेश", "उत्तरप्रदेश", "भारत")
+
+
 def _canon_district(token: str) -> str:
     return phonetic_skeleton(token) or token
 
@@ -439,7 +454,7 @@ def build_privacy_plan(
         genders = [e.gender for e in grp if e.gender]
         c_gender[ckey] = Counter(genders).most_common(1)[0][0] if genders else "?"
         # Majority district over the cluster's records (a hospital's own town mentioned once must not win)
-        dist_votes = Counter(_canon_district(d) for e in grp for d in e.districts if d)
+        dist_votes = Counter(_canon_district(d) for e in grp for d in e.districts if d and not _is_region(d))
         c_dist[ckey] = min(dist_votes, key=lambda d: (-dist_votes[d], d)) if dist_votes else ""
         tehs = sorted({t for e in grp for t in rec_tehsils.get(e.uid, set()) if t})
         c_teh[ckey] = tehs[0] if tehs else ""
