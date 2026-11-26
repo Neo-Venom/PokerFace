@@ -1,0 +1,13 @@
+# Project RAKSHA — Privacy & Linkage Policy
+age_band_years: 5
+age_top_code: 85
+date_shift_min_days: 30
+date_shift_max_days: 180
+min_group_size: 5
+location_min_group: 3
+rare_dx_min_patients: 4
+l_diversity: 2
+psn_length: 8
+linkage_merge_threshold: 7.5
+encrypt_quarantine_archive: false
+max_json_depth: 500
