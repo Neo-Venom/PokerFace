@@ -401,13 +401,20 @@ def scan_and_remediate(
         n_san = sum(1 for e in files_list if e.get("status") == "sanitized")
         rec_count = 0
         linked_count = 0
+        gen_count = 0
+        sup_count = 0
         if records_path.is_file():
             for line in records_path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     rec_count += 1
                     try:
-                        if json.loads(line).get("patient") is not None:
+                        obj = json.loads(line)
+                        if obj.get("patient") is not None:
                             linked_count += 1
+                        if obj.get("status") == "generalized":
+                            gen_count += 1
+                        elif obj.get("status") == "suppressed":
+                            sup_count += 1
                     except ValueError:
                         pass
         counts = report.setdefault("counts", {})
@@ -416,6 +423,8 @@ def scan_and_remediate(
         counts["files_quarantined"] = len(files_list) - n_san
         counts["records_processed"] = rec_count
         counts["records_linked"] = linked_count
+        counts["records_generalized"] = gen_count
+        counts["records_suppressed"] = sup_count
 
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return summary

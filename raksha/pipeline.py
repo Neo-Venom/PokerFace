@@ -39,6 +39,9 @@ from raksha.identity.pseudonymizer import (
     issue_cluster_pseudonyms,
 )
 from raksha.ingest.loader import SUPPORTED_EXTS, decode_bytes, load_json_safe, load_tabular, sniff_format
+from raksha.privacy.dates import infer_month_first, keyed_shift_days
+from raksha.privacy.risk import PolicySettings, PrivacyPlan, assess_privacy_risks, is_non_patient_static_file
+from raksha.privacy.transform import apply_privacy_to_json, apply_privacy_to_tabular, generalize_text
 from raksha.qa.leak_scanner import scan_and_remediate
 
 
@@ -90,10 +93,17 @@ def _process_tabular(
     out_rel: str,
     records: list[dict],
     record_to_psn: dict[tuple[str, str], str] | None = None,
+    plans_by_rec: dict[tuple[str, str], PrivacyPlan] | None = None,
     text_scrubber=None,
     stats: dict[str, int] | None = None,
 ) -> str:
     clean_header, clean_body = process_table_rows(rows, text_scrubber=text_scrubber, stats=stats)
+    gen_flags: dict[int, bool] = {}
+    if plans_by_rec is not None and not is_non_patient_static_file(rel):
+        plans_by_row = {i: plans_by_rec[(rel, f"row:{i}")] for i in range(len(clean_body)) if (rel, f"row:{i}") in plans_by_rec}
+        if plans_by_row:
+            clean_body, gen_flags = apply_privacy_to_tabular(rows[0], rows[1:], clean_body, rel, plans_by_row)
+
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=delimiter, lineterminator="\n")
     writer.writerow(clean_header)
@@ -103,7 +113,10 @@ def _process_tabular(
         if psn is not None:
             row = inject_psn_tabular_row(clean_header, row, psn)
         writer.writerow(row)
-        records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": psn})
+        rec = {"file": f"sanitized/{out_rel}", "loc": loc, "patient": psn}
+        if gen_flags.get(i):
+            rec["status"] = "generalized"
+        records.append(rec)
     return buf.getvalue()
 
 
@@ -113,27 +126,49 @@ def _process_json(
     out_rel: str,
     records: list[dict],
     record_to_psn: dict[tuple[str, str], str] | None = None,
+    plans_by_rec: dict[tuple[str, str], PrivacyPlan] | None = None,
+    doc_shift_days: int = 0,
     text_scrubber=None,
     stats: dict[str, int] | None = None,
 ) -> str:
     cleaned = sanitize_json_data(data, text_scrubber=text_scrubber, stats=stats)
     units = get_json_record_units(data)
+
+    key_to_cleaned: dict[str, str] = {}
+    if isinstance(data, dict) and isinstance(cleaned, dict):
+        for orig_k in data.keys():
+            if orig_k in cleaned:
+                key_to_cleaned[orig_k] = orig_k
+            else:
+                sk = sanitize_header_or_key(orig_k)
+                if sk in cleaned:
+                    key_to_cleaned[orig_k] = sk
+
+    loc_gen: dict[str, bool] = {}
+    if plans_by_rec is not None and not is_non_patient_static_file(rel):
+        plans_by_loc = {loc: plans_by_rec[(rel, loc)] for loc, _ in units if (rel, loc) in plans_by_rec}
+        month_first = False
+        if isinstance(data, dict):
+            month_first = infer_month_first([json.dumps(data, ensure_ascii=False)[:8000]], header_or_rel_hint=rel)
+        cleaned, loc_gen = apply_privacy_to_json(
+            cleaned,
+            rel,
+            units,
+            plans_by_loc,
+            doc_shift_days,
+            month_first=month_first,
+            key_to_cleaned=key_to_cleaned,
+        )
+
     if len(units) == 1 and units[0][0] == "doc":
         psn = record_to_psn.get((rel, "doc")) if record_to_psn is not None else None
         if psn is not None:
             cleaned = inject_psn_json_obj(cleaned, psn)
-        records.append({"file": f"sanitized/{out_rel}", "loc": "doc", "patient": psn})
+        rec = {"file": f"sanitized/{out_rel}", "loc": "doc", "patient": psn}
+        if loc_gen.get("doc"):
+            rec["status"] = "generalized"
+        records.append(rec)
     else:
-        key_to_cleaned: dict[str, str] = {}
-        if isinstance(data, dict) and isinstance(cleaned, dict):
-            for orig_k in data.keys():
-                if orig_k in cleaned:
-                    key_to_cleaned[orig_k] = orig_k
-                else:
-                    sk = sanitize_header_or_key(orig_k)
-                    if sk in cleaned:
-                        key_to_cleaned[orig_k] = sk
-
         for loc, _sub in units:
             psn = record_to_psn.get((rel, loc)) if record_to_psn is not None else None
             if psn is not None and isinstance(cleaned, dict) and loc.startswith("/"):
@@ -149,7 +184,10 @@ def _process_json(
                                 cleaned[ck][idx] = inject_psn_json_obj(cleaned[ck][idx], psn)
                         except ValueError:
                             pass
-            records.append({"file": f"sanitized/{out_rel}", "loc": loc, "patient": psn})
+            rec = {"file": f"sanitized/{out_rel}", "loc": loc, "patient": psn}
+            if loc_gen.get(loc):
+                rec["status"] = "generalized"
+            records.append(rec)
 
     return json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n"
 
@@ -160,17 +198,29 @@ def _process_text(
     out_rel: str,
     records: list[dict],
     record_to_psn: dict[tuple[str, str], str] | None = None,
+    plan: PrivacyPlan | None = None,
     text_scrubber=None,
 ) -> str:
     psn = record_to_psn.get((rel, "doc")) if record_to_psn is not None else None
-    records.append({"file": f"sanitized/{out_rel}", "loc": "doc", "patient": psn})
     cleaned = text_scrubber(text) if text_scrubber is not None else text
+    was_gen = False
+    if plan is not None and not is_non_patient_static_file(rel):
+        month_first = infer_month_first([text], header_or_rel_hint=rel)
+        cleaned, was_gen = generalize_text(cleaned, plan, month_first=month_first)
     if psn is not None:
         cleaned = inject_psn_text(cleaned, psn)
+    rec = {"file": f"sanitized/{out_rel}", "loc": "doc", "patient": psn}
+    if was_gen:
+        rec["status"] = "generalized"
+    records.append(rec)
     return cleaned
 
 
-def run_pipeline(input_dir: Path, output_dir: Path) -> int:
+def run_pipeline(
+    input_dir: Path,
+    output_dir: Path,
+    policy_override: PolicySettings | dict | None = None,
+) -> int:
     """Run deterministic two-pass de-identification pipeline from input_dir to output_dir."""
     t0 = time.monotonic()
     try:
@@ -180,6 +230,14 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
         return 1
 
     _policy = load_policy()
+    if isinstance(policy_override, PolicySettings):
+        policy_cfg = policy_override
+    elif isinstance(policy_override, dict):
+        merged_pol = dict(_policy)
+        merged_pol.update(policy_override)
+        policy_cfg = PolicySettings.from_policy(merged_pol)
+    else:
+        policy_cfg = PolicySettings.from_policy(_policy)
     _psn_key = derive_subkey(secret, b"pseudonym")
     _shift_key = derive_subkey(secret, b"date_shift")
 
@@ -234,6 +292,16 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
         if cid in cluster_to_psn
     }
 
+    # M3: Profile risk assessment & adaptive quasi-identifier generalization plans
+    plans_by_rec = assess_privacy_risks(
+        parsed_items,
+        evidences,
+        cluster_res,
+        cluster_to_psn,
+        policy_cfg,
+        _shift_key,
+    )
+
     entity_stats: dict[str, int] = {}
 
     def scrub_free_text(txt: str) -> str:
@@ -269,6 +337,12 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
                 used_paths=used_out_paths,
                 stats=entity_stats,
             )
+            doc_shift = keyed_shift_days(
+                f"doc|{item['sha']}",
+                _shift_key,
+                max_days=policy_cfg.date_shift_max_days,
+                min_days=policy_cfg.date_shift_min_days,
+            )
             if fmt in ("csv", "tsv"):
                 delim = "\t" if fmt == "tsv" else ","
                 result = _process_tabular(
@@ -278,6 +352,7 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
                     out_rel,
                     records,
                     record_to_psn=record_to_psn,
+                    plans_by_rec=plans_by_rec,
                     text_scrubber=scrub_free_text,
                     stats=entity_stats,
                 )
@@ -288,6 +363,8 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
                     out_rel,
                     records,
                     record_to_psn=record_to_psn,
+                    plans_by_rec=plans_by_rec,
+                    doc_shift_days=doc_shift,
                     text_scrubber=scrub_free_text,
                     stats=entity_stats,
                 )
@@ -298,6 +375,7 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
                     out_rel,
                     records,
                     record_to_psn=record_to_psn,
+                    plan=plans_by_rec.get((rel, "doc")),
                     text_scrubber=scrub_free_text,
                 )
 
@@ -319,6 +397,8 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
 
     n_san = sum(e["status"] == "sanitized" for e in files_report)
     total_detected = sum(entity_stats.values())
+    n_gen = sum(1 for r in records if r.get("status") == "generalized")
+    n_sup = sum(1 for r in records if r.get("status") == "suppressed")
     report = {
         "schema": "raksha-report/1",
         "files": files_report,
@@ -329,8 +409,8 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
             "records_processed": len(records),
             "identifiers_detected": total_detected,
             "records_linked": sum(r["patient"] is not None for r in records),
-            "records_generalized": 0,
-            "records_suppressed": 0,
+            "records_generalized": n_gen,
+            "records_suppressed": n_sup,
             "records_quarantined": 0,
         },
         "entities": dict(sorted(entity_stats.items())),

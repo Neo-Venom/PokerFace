@@ -128,4 +128,32 @@ Baseline starter (before M1 changes):
    - `tools/eval_linkage.py` against `dev/truth/truth.json`: **771 / 771** linkable units across **48 / 48** true clusters, **Pairwise P/R/F0.5 = 1.0000 / 1.0000 / 1.0000**, **B-cubed P/R/F1 = 1.0000 / 1.0000 / 1.0000**, **Wrong merges = 0**, **PSN in-record consistency = 776 / 776 (100.0%)**.
    - `tools/robustness/`: **0 / 267 (0.0%)** unseen PII leaked, **0 / 3** canaries, **13 / 13 (100.0%)** medical values kept, **Determinism = True**, **Different-secret diff = True**, **0** truth-free survivors on both practice LF and unseen inputs.
 
+---
+
+## Milestone M3: Adaptive Privacy Engine + Local Attacker Simulator (`tools/attacker/`)
+
+1. **Offline Attacker Simulator (`tools/attacker/simulator.py`, dev-only, A1–A7 per `docs/ATTACKS.md`)**:
+   - Approximates A1 (direct exposure), A2/A3 (Sweeney record linkage with filter-skip cascade and transliteration-aware weighting against `registry.csv`), A4 (profile aggregation across exported `PSN-...` and reference tokens), A5 (targeted known-facts attack with global date-shift recovery, condition rarity weighting, stay-length intervals, and membership-inference decoys), A6 (dictionary hash/base64/reverse pseudonym inversion), and A7 (cross-release linkability across two `RAKSHA_SECRET` values).
+2. **Keyed Per-Patient Date Shifting (`raksha/privacy/dates.py`)**:
+   - Deterministic signed shift derived via HMAC-SHA256 from `derive_subkey(secret, b"date_shift")` with magnitude `15..180` days (never `0` or near-zero), keyed by `PSN` for linked patients across all CSV/TSV/JSON/FHIR/TXT files and by `content_hash` for unlinked records.
+   - Preserves all intra-patient date intervals and admission-to-discharge stay lengths (`100.0%`), preserves input formats (ISO8601 + timezone, `DD/MM/YYYY`, `MM/DD/YYYY`, `DD.MM.YYYY`, `DD-MM-YYYY`, `[DD/MM/YY,`), shifts `_export_meta`/`exported_at` timestamps, and recomputes adjacent English/Hindi weekday names to match shifted dates.
+3. **Truthful Age Bands, Location Broadening & Runtime Risk Engine (`raksha/privacy/risk.py`, `raksha/privacy/transform.py`)**:
+   - Runtime risk estimator computes catchment candidate-set size `k_est` and rare-condition exposure purely from in-batch demographic distributions and empirical diagnosis/procedure counts (never reading external truth or attacker files).
+   - Escalates QI generalization per profile in order: remove `house/landmark/locality/village/PIN` & `tehsil` (`[TEHSIL]`) -> widen truthful age band (`5 -> 10 -> 20`, with `80+`/`85+` cap, skipping clinical durations/lab ranges) -> broaden/suppress `district` (`[DISTRICT]` & `Organization.address[].city`) -> coarsen `gender` -> suppress age (`[AGE]`); FHIR `Patient.birthDate` omitted when generalized/risky while keeping R4 bundles valid; `clean/` and non-patient static docs untouched.
+   - Populates exact `status: "generalized"` in `records.jsonl` and true `counts.records_generalized` / `counts.records_suppressed` in `report.json`.
+4. **Before / After Attacker & Utility Results (Practice LF Dataset)**:
+   - `pytest -v`: **31 / 31 passed** (`0.79s`).
+   - `validate_output.py`: **`CONTRACT OK`** (`files 200 sanitized 194 quarantined 6 records 823`).
+   - `check_dev.py`: **0 / 3230 (0.0%)** PII leaked, **0 / 4** canaries, Linking **P/R/F0.5 = 1.00 / 1.00 / 1.00 (0 wrong merges)**, **4763 / 4763 (100.0%)** clinical probes preserved (`4763 / 4855 = 98.1%` including `92` districts intentionally broadened for k-anonymity), **100.0%** LoS/interval preservation.
+   - **A1–A7 Comparison (`tools/attacker/simulator.py`, `m3-final-secret-alpha` vs `beta`)**:
+     - `A1_direct_exposure`: `1.000` (raw) -> **`0.000`**
+     - `A3_record_linkage`: `0.684` (raw) -> `0.108` (uniform 5yr+dist) -> **`0.025`** (adaptive `k=5`, `-96.3%` vs raw)
+     - `A4_profile_reid`: `0.979` (raw) -> `0.833` (M2 ungeneralized) -> `0.542` (uniform 5yr+dist) -> **`0.062`** (adaptive `k=5`, `-93.6%` vs raw)
+     - `A5_targeted_known_facts`: `1.000` (raw) -> **`0.486`** (`0.446` sweep; `-51%`–`-55%` vs raw; `0/4` decoy FPs)
+     - `A6_pseudonym_inversion`: **`0.000`**
+     - `A7_cross_release_link`: `1.000` (raw / M2 unshifted) -> **`0.000`**
+     - Overall weighted attack resistance (`k=5`): **`0.8827`** (`Overall risk: 0.1173`).
+   - Utility-vs-Privacy sweep (`tools/eval_privacy_utility.py`): documented across Raw, Uniform (`5yr+dist`, `10yr+nodist`), and Adaptive `k=3 / 5 / 8` policies.
+
+
 
