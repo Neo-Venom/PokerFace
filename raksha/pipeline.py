@@ -15,7 +15,13 @@ from raksha.detect.identifiers import (
     derive_id_patterns_from_values,
     detect_identifier_spans,
     redact_spans,
+    resolve_overlaps,
 )
+from raksha.detect.names_context import (
+    detect_context_name_and_address_spans,
+    find_protected_clinical_and_doctor_spans,
+)
+from raksha.detect.normalize import build_normalized_view
 from raksha.detect.structured import infer_column_type, process_table_rows, sanitize_json_data
 from raksha.ingest.loader import decode_bytes, load_json_safe, load_tabular, sniff_format
 
@@ -171,8 +177,12 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
     entity_stats: dict[str, int] = {}
 
     def scrub_free_text(txt: str) -> str:
-        spans = detect_identifier_spans(txt, extra_mrn_patterns=extra_mrn_patterns)
-        return redact_spans(txt, spans, stats=entity_stats)
+        nv = build_normalized_view(txt)
+        prot = find_protected_clinical_and_doctor_spans(txt, view=nv)
+        id_spans = detect_identifier_spans(txt, extra_mrn_patterns=extra_mrn_patterns, view=nv)
+        ctx_spans = detect_context_name_and_address_spans(txt, view=nv, protected_spans=prot)
+        merged = resolve_overlaps(id_spans + ctx_spans)
+        return redact_spans(txt, merged, stats=entity_stats)
 
     # Pass 2: sanitize & write outputs
     files_report: list[dict] = []

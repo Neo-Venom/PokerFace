@@ -148,7 +148,7 @@ def _looks_like_address_composite(val: str) -> bool:
 
 # --------------------------------------------------------------------------- composite address scrubber
 _ADDR_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("RELATIVE_NAME", re.compile(r"(?i)(?<=C/O\s)([A-Z\u0900-\u097F][A-Za-z\u0900-\u097F.\-']+(?:\s+[A-Z\u0900-\u097F][A-Za-z\u0900-\u097F.\-']+){0,3})(?=,|$)")),
+    ("RELATIVE_NAME", re.compile(r"(?i)(?<=C/O\s)([A-Z\u0900-\u0963\u0970-\u097F][A-Za-z\u0900-\u0963\u0970-\u097F.\-']+(?:\s+[A-Z\u0900-\u0963\u0970-\u097F][A-Za-z\u0900-\u0963\u0970-\u097F.\-']+){0,3})(?=,|$)")),
     ("HOUSE", re.compile(r"(?i)\b(?:H\.?\s*No\.?|House(?:\s+No\.?)?|Makan\s+No\.?)\s*[\dA-Za-z/-]+")),
     ("HOUSE", re.compile(r"मकान\s*(?:नं\.?|सं\.?)\s*[\d०-९A-Za-z/-]+")),
     ("LOCALITY", re.compile(r"(?i)\bWard\s*(?:No\.?)?\s*\d+")),
@@ -159,6 +159,7 @@ _ADDR_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("LANDMARK", re.compile(r"[^,\n]+\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
     ("VILLAGE", re.compile(r"(?i)\b(?:Vill\.?|Village|Gram)\s+[^,\n\-]+")),
     ("VILLAGE", re.compile(r"ग्राम\s+[^,\n\-]+")),
+    ("VILLAGE", re.compile(r"(?i)(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Ward|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([A-Z\u0900-\u0963\u0970-\u097F][^\n,]+?)(?=,\s*(?:Tehsil|तहसील)\b)")),
     ("PIN", re.compile(r"(?<!\d)[1-8]\d{5}(?!\d)")),
 ]
 
@@ -687,6 +688,24 @@ def _sanitize_fhir_bundle(bundle: dict, text_scrubber=None, stats: dict[str, int
                     else:
                         new_contacts.append(ct)
                 res["contact"] = new_contacts
+            if isinstance(res.get("extension"), list):
+                new_exts = []
+                for ext in res["extension"]:
+                    if isinstance(ext, dict) and isinstance(ext.get("valueString"), str):
+                        ex_c = dict(ext)
+                        url = str(ex_c.get("url", "")).casefold()
+                        if any(w in url for w in ("mother", "father", "spouse", "guardian", "relative", "parent", "kin")):
+                            ex_c["valueString"] = "[RELATIVE_NAME]"
+                            if stats is not None:
+                                stats["RELATIVE_NAME"] = stats.get("RELATIVE_NAME", 0) + 1
+                        elif any(w in url for w in ("name", "patient", "phone", "aadhaar", "abha", "address")):
+                            ex_c["valueString"] = "[PATIENT_NAME]"
+                            if stats is not None:
+                                stats["PATIENT_NAME"] = stats.get("PATIENT_NAME", 0) + 1
+                        new_exts.append(ex_c)
+                    else:
+                        new_exts.append(ext)
+                res["extension"] = new_exts
 
         elif rt == "Composition":
             if isinstance(res.get("subject"), dict) and isinstance(res["subject"].get("display"), str):

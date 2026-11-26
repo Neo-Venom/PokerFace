@@ -44,5 +44,19 @@ Baseline starter (before M1 changes):
   - Total PII leaked: 536 / 3230 (16.6%), Medical values kept: 4855 / 4855 (100.0%), Canaries: 3 / 4
   - All 8 unit tests passing (including zero-width, homoglyph, Devanagari digit, and cross-script offset mapping)
 
+### Step D: Context-Aware Names in Free Text
+- Triggers for `Name:`, `Patient Name:`, `नाम:`, `मरीज़ का नाम:`, `S/o D/o W/o`, `Mr/Mrs/Smt/Shri/श्री/श्रीमती`, Hinglish suffixes (`ji`, `sahab`, `didi`, `behenji`, `bhai`, `bhaiya`, `amma`, `chachu`, `mama`), postpositions (`ka/ki`, `को ... दिन से`), WhatsApp sender lines, initials, surname-first, and free-text address/village triggers (including village-before-Tehsil)
+- Multi-token `C/O` ambiguity resolution (`C/O fever for 3 days` preserved vs `C/O Ramesh Kumar` redacted)
+- Doctor (`Dr./डॉ/Consultant/Prescriber`) preservation, disease eponym (`Parkinson's`, `Addison's`, `Bell's`, etc.) preservation, and `ASHA worker` preservation; FHIR `Patient.extension` relative/name scrubbing
+- Results (`check_dev.py`):
+  - Total PII leaked: 87 / 3230 (2.7%)
+  - Zero leaks (0.0%) on 13 / 16 entity types (only MRN 5.1%, PATIENT_NAME 4.0%, PHONE 1.9% — mainly in filenames and base64)
+  - By script: latin 2.7%, deva 0.0%, hinglish 6.3%
+  - By channel: content 0.9%, filename 100.0%, base64 100.0%, metadata 5.0%, key 0.0%, header 0.0%
+  - Canaries leaked: 1 / 4
+  - Medical values kept: 4845 / 4855 (99.8%)
+  - Raw copies: 0
+
+
 
 

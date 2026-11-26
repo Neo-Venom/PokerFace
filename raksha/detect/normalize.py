@@ -87,6 +87,8 @@ def phonetic_key(text: str) -> str:
         t = re.sub(r"(.)\1+", r"\1", t)  # collapse double letters
         t = t.replace("ph", "f").replace("v", "w").replace("q", "k").replace("z", "j").replace("sh", "s")
         t = t.replace("dh", "d").replace("th", "t").replace("bh", "b").replace("kh", "k").replace("gh", "g")
+        # Medial and final schwa tolerance for Devanagari->ITRANS vs Romanized Hindi spellings
+        t = re.sub(r"(?<=[bcdfghjklmnpqrstvwxyz])a(?=[bcdfghjklmnpqrstvwxyz])", "", t)
         t = re.sub(r"([bcdfghjklmnpqrstvwxyz])a$", r"\1", t)
         norm_toks.append(t)
     return " ".join(norm_toks)
