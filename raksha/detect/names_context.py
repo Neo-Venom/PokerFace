@@ -55,6 +55,7 @@ _STOP_NAME_WORDS = {
     "visited", "discharged", "informed", "treated", "conservatively", "referred",
     "sector", "phase", "colony", "quarter", "qtr", "flat", "plot", "consent", "signed",
     "referral", "note", "stage", "grade", "type", "group", "code", "level", "vitamin", "covid", "sars",
+    "father", "mother", "wife", "husband", "brother", "sister", "son", "daughter", "family", "relative", "nurse", "staff", "ambulance", "police",
     "मरीज़", "रोगी", "डॉक्टर", "वार्ड", "निदान", "बुखार", "दर्द", "दवाई", "सारांश",
     "अस्पताल", "तारीख", "आयु", "उम्र", "ग्राम", "पता", "मोबाइल", "छुट्टी", "भर्ती", "है",
     "नोट", "रेफरल", "संदर्भ", "लाभार्थी",
@@ -90,12 +91,16 @@ _PATIENT_UNDELIM_RE = re.compile(
     rf"(?=[ \t]*[\(\n\r,;]|[ \t]+(?:ko|ne|ki|ka|se|who|visited|came|is|was|has|had|presented|signed|discharged)\b|[ \t]+(?![{_NL}])|$)"
 )
 
-# Relative triggers (delimited "Attendant: <Name>" and undelimited "Attendant <Name> (...)")
+# Relative triggers (delimited "Attendant: <Name>", "पिता: <Name>", and undelimited "Attendant <Name> (...)")
 _REL_LABEL_RE = re.compile(
-    rf"(?i:(?:[SDW][ \t]*/[ \t]*[Oo])|(?:पिता[ \t]+का[ \t]+नाम|पति[ \t]+का[ \t]+नाम|माता[ \t]+का[ \t]+नाम|अभिभावक|संरक्षक)[ \t]*[:\-]?"
-    rf"|(?:Attendant|Caretaker|Guardian|Next[ \t]+of[ \t]+Kin)(?:[ \t]*\([^)]*\))?[ \t]*[:\-])"
+    rf"(?i:(?:[SDW][ \t]*/[ \t]*[Oo])"
+    rf"|(?:पिता(?:/पति)?(?:[ \t]+(?:का|की)[ \t]+नाम)?|पति(?:[ \t]+(?:का|की)[ \t]+नाम)?|माता(?:[ \t]+(?:का|की)[ \t]+नाम)?|पुत्र|पुत्री|पत्नी|भाई|बहन|अभिभावक|संरक्षक)[ \t]*[:\-]"
+    rf"|(?:पिता(?:/पति)?|पति|माता)[ \t]+(?:का|की)[ \t]+नाम[ \t]*[:\-]?"
+    rf"|(?:अभिभावक|संरक्षक)[ \t]*[:\-]?"
+    rf"|(?:Attendant|Caretaker|Guardian|Next[ \t]+of[ \t]+Kin|Father|Mother|Husband|Wife|Spouse)(?:[ \t]*\([^)]*\))?[ \t]*[:\-]"
+    rf"|\bRef(?:erred[ \t]+by)?[ \t]*:[ \t]*(?!(?i:range|dr\.?|डॉ)\b))"
     rf"[ \t]*({_SLOT_SEQ})"
-    rf"(?=[ \t]*[,.;\(\)\n\r]|[ \t]+(?i:discharged|informed|signed|ne|ko|ke|ki|se|Mob|Mobile|Phone|को|से|ने)\b|[ \t]+(?![{_NL}])|$)"
+    rf"(?=[ \t]*[,.;|\(\)\n\r]|[ \t]+(?i:discharged|informed|signed|ne|ko|ke|ki|se|Mob|Mobile|Phone|फ़ोन|फोन|मोबाइल|को|से|ने)\b|[ \t]+(?![{_NL}])|$)"
 )
 _REL_UNDELIM_RE = re.compile(
     rf"\b(?i:Attendant|Caretaker|Guardian|Accompanied[ \t]+by)[ \t]+(?!(?i:physician|doctor|nurse|staff|dr\.?|डॉ))({_SLOT_SEQ})"
@@ -112,10 +117,10 @@ _PREFIX_HONORIFIC_RE = re.compile(
     rf"(?<!\w)(?:Mr\.?|Mrs\.?|Ms\.?|Miss|Smt\.?|Shri|Shree|Sri|श्री|श्रीमती|सुश्री|(?-i:Pt\.?))[ \t]+({_SLOT_SEQ})"
 )
 
-# Hinglish honorific/relationship suffixes ("Rohan ji", "Kiran sahab", "Priya Bhaiya", "Sohan Mama")
+# Hinglish honorific/relationship suffixes ("Rohan ji", "Kiran sahab", "Jayesh babu", "Priya Bhaiya", "Sohan Mama")
 _SUFFIX_HONORIFIC_RE = re.compile(
-    rf"({_SHORT_SEQ})[ \t]+"
-    rf"(?:ji|sahab|saheb|saab|didi|behenji|bahenji|bhai|bhaiya|bhaisahab|chacha|chachu|mama|mami|mausi|bhabhi|amma|baba|जी|साहब|दीदी|बहनजी|भाई|भैया)"
+    rf"(?<![{_LL}{_DL}])({_SHORT_SEQ})[ \t]+"
+    rf"(?i:ji|sahab|saheb|saab|didi|behenji|bahenji|bhai|bhaiya|bhaisahab|chacha|chachu|mama|mami|mausi|bhabhi|amma|baba|babu|ben|garu|anna|akka|tai|sahiba|जी|साहब|दीदी|बहनजी|भाई|भैया|बाबू|बेन|अन्ना|ताई|साहिबा)"
     rf"(?=[ \t]|[.,:;!?\)\n\r]|$)"
 )
 
@@ -146,6 +151,32 @@ _POSSESSIVE_NAME_RE = re.compile(
     rf"(?:^|[ \t])({_SHORT_SEQ})'s[ \t]+(?:attendant|family|father|mother|wife|husband|son|daughter|report|samples?)\b"
 )
 
+# Additional multilingual narrative / clinical-note templates (kept strictly scoped so _SLOT_SEQ stays case-sensitive)
+_SELF_CONSENT_RE = re.compile(
+    rf"(?<!\w)I[ \t]*,[ \t]*({_SLOT_SEQ})[ \t]*,(?=[ \t]+(?i:consent|agree|hereby|authorize|authorise|acknowledge|declare|understand|confirm|son|daughter|wife|aged?|r/o|resident|bearing)\b)"
+)
+_ACTION_SUBJECT_RE = re.compile(
+    rf"(?:^|[\n.!?][ \t]*)({_SLOT_SEQ})(?=[ \t]+(?i:wants|needs|requested|requests|is[ \t]+asking|asked|called|reported|complained|returned|refused|agreed|consented)[ \t]+(?:a[ \t]+|the[ \t]+|for[ \t]+|to[ \t]+|about[ \t]+)?(?i:refund|copy|reports?|bills?|discharge|admission|summary|records?|be\b|get\b))"
+)
+_BROUGHT_BY_RE = re.compile(
+    rf"\b(?i:brought[ \t]+by|accompanied[ \t]+by|attended[ \t]+by)[ \t]+(?:(?i:her|his|their|patient'?s|pt'?s)[ \t]+)?(?:(?i:father|mother|husband|wife|spouse|son|daughter|brother|sister|uncle|aunt|cousin|nephew|niece|relative|attendant|guardian|friend|neighbour|neighbor|bhai|bhaiya|didi|pita|mata|pati|patni|beta|beti)[ \t]+)?({_SLOT_SEQ})(?=[ \t]*[,.;\(\)\n\r]|[ \t]+(?i:on|at|ne|ko|ke|ki|se|who|for|with|and|to)\b|[ \t]+(?![{_NL}])|$)"
+)
+_POSS_REL_NAME_RE = re.compile(
+    rf"(?i:\b(?:unke|unki|unka|uske|uski|uska|inhe|inke|mere|meri|his|her|their)[ \t]+(?:father|mother|husband|wife|son|daughter|brother|sister|pita|mata|pati|patni|beta|beti|bhai|behen|bahen|mama|chacha|guardian|attendant|पिता|माता|पति|पत्नी|भाई|बहन|बेटा|बेटी))[ \t]+({_SLOT_SEQ})(?=[ \t]*[,.;\(\)\n\r]|[ \t]+(?i:ne|ko|ka|ki|ke|se|bataya|kaha|bola|boli|signed|called|ने|को)\b|[ \t]+(?![{_NL}])|$)"
+)
+_BED_PATIENT_RE = re.compile(
+    rf"(?i:\b(?:bed(?:[ \t]*no\.?)?(?:[ \t]*\d{{1,4}})?|ward[ \t]*\d{{1,3}})[ \t]+(?:pe|par|per|on|[:\-]))[ \t]+({_SLOT_SEQ})(?=[ \t]*[\(\n\r,;]|[ \t]+(?:\d|(?i:ko|ne|ka|ki|hai|is))\b|$)"
+)
+_CALL_NAME_RE = re.compile(
+    rf"\b(?i:call|contact|ring|speak[ \t]+to|inform)[ \t]+({_SLOT_SEQ})(?=[ \t]+(?i:on|at|par|pe)\b[ \t]+[\+\d(])"
+)
+_INLINE_AGESEX_NAME_RE = re.compile(
+    rf"(?:^|\n|[|•\-–][ \t]*)[ \t]*({_SLOT_SEQ})(?:[ \t]{{2,}}|[ \t]*\([ \t]*)\d{{1,3}}[ \t]*(?i:Y|Yrs?|yr)?[ \t]*/[ \t]*(?i:[MF]|Male|Female|पुरुष|महिला)\b"
+)
+_HTML_CELL_NAME_RE = re.compile(
+    rf"(?i:<(?:td|th)\b[^>]*>)[ \t]*({_TOK}[ \t]+{_TOK}(?:[ \t]+{_TOK}){{0,2}})[ \t]*(?i:</(?:td|th)>)"
+)
+
 # Hinglish / Hindi postpositions indicating a person subject
 _HINGLISH_POSTPOS_RE = re.compile(
     rf"(?:^|[\n.\-–।][ \t]*)({_SHORT_SEQ})[ \t]+(?:ka[ \t]+(?:BP|pulse|temp|sugar|condition|report)|ki[ \t]+(?:condition|tabiyat|report)|को[ \t]+\d+[ \t]*दिन[ \t]+से|को[ \t]+बुखार|का[ \t]+बीपी)"
@@ -165,28 +196,30 @@ _CARE_OF_CAND_RE = re.compile(r"(?i)(?<![KH]/)C[ \t]*/[ \t]*O[ \t]*:?[ \t]*([^\n
 # Free-text address & village lines (LANDMARK matched before LOCALITY so 'near Neem Peepal Crossing' stays LANDMARK)
 _ADDRESS_LINE_RE = re.compile(
     r"(?i)(?:Address(?:\s*\([^)]*\))?|पता|निवासी(?:\s*ग्राम)?)[ \t]*[:\-][ \t]*([^\n\r]+)"
+    r"|\b(?:resident[ \t]+of|r/o)[ \t]+(?=(?:H\.?\s*No|House|Makan|Qtr|Quarter|Flat|Plot|Ward|Sector|Mohalla|near|opp|मकान|वार्ड|मोहल्ला)\b)([^\n\r]+)"
 )
 _VILLAGE_LINE_RE = re.compile(
     r"(?i)(?:(?:\bVill(?:age)?\.?|\bGram|निवासी[ \t]*ग्राम|ग्राम)[ \t]*[:\-]|(?<![0-9०-९][\s.])(?:\b(?:Gaon|Gram)|(?<![\w0-9०-९])ग्राम)[ \t]+)[ \t]*([^\n\r,;]+)"
+    r"|\b(?i:resident[ \t]+of|native[ \t]+of|निवासी)[ \t]+(?!(?i:H\.?\s*No|House|Makan|Qtr|Quarter|Flat|Plot|Ward|Sector|Mohalla|near|opp|the|a|an|this|india)\b)([^\n\r,;.()]{2,40})"
 )
 
 # Address sub-components (English, residential quarters/colonies/bazaars/mandis, and Devanagari)
 _FREE_ADDR_COMPONENTS: list[tuple[str, re.Pattern]] = [
     ("HOUSE", re.compile(r"(?i)\b(?:H\.?\s*No\.?|House(?:\s+No\.?)?|Makan\s+No\.?|Qtr\.?|Quarter|Flat(?:\s+No\.?)?|Plot(?:\s+No\.?)?|Door(?:\s+No\.?)?)[\s.\-#:/]*[\dA-Za-z/-]*\d[\dA-Za-z/-]*")),
     ("HOUSE", re.compile(r"मकान\s*(?:नं\.?|सं\.?)\s*[\dA-Za-z/-]+")),
-    ("LANDMARK", re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind|beside)\s+[^,\n]+")),
-    ("LANDMARK", re.compile(r"[^,\n]+?\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
+    ("LANDMARK", re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind|beside)\s+[^,\n;]+")),
+    ("LANDMARK", re.compile(r"[^,\n;]+?\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
     ("LOCALITY", re.compile(r"(?i)\bWard\s*(?:No\.?)?\s*\d+")),
     ("LOCALITY", re.compile(r"वार्ड\s*(?:नं\.?)?\s*\d+")),
     ("LOCALITY", re.compile(r"(?i)\bSector\s*[-#]?\s*[A-Za-z0-9]+(?:\s+(?:Colony|Phase|Extension|Enclave|Block))?")),
-    ("LOCALITY", re.compile(r"(?i)\bMohalla\s+[^,\n]+")),
-    ("LOCALITY", re.compile(rf"\b[{_LU}][{_LL}0-9]*(?:\s+[{_LU}0-9][{_LL}0-9]*){{0,2}}\s+(?:Colony|Nagar|Vihar|Enclave|Puram|Extension|Basti|Tola|Layout|Chowk|Bazaar|Bazar|Mandi|Ganj|Bagh|Sarai|Chauraha|Pura|Marg|Lane|Market|Phase|Block)\b")),
-    ("LOCALITY", re.compile(r"मोहल्ला\s+[^,\n]+")),
-    ("LOCALITY", re.compile(rf"[{_DL}]+(?:\s+[{_DL}]+){{0,2}}\s+(?:मोहल्ला|टोला|बस्ती|कॉलोनी|नगर|विहार|बाज़ार|बाजार|मंडी|चौक|गली|गंज|बाग़|बाग|मार्ग)(?=\s*[,;\.\-\n\r]|$)")),
-    ("VILLAGE", re.compile(r"(?i)\b(?:Vill\.?|Village|Gram)\s+[^,\n\-]+")),
-    ("VILLAGE", re.compile(r"(?<![0-9०-९][\s.])(?<![\w0-9०-९])ग्राम\s+[^,\n\-]+")),
+    ("LOCALITY", re.compile(r"(?i)\bMohalla\s+[^,\n;]+")),
+    ("LOCALITY", re.compile(rf"\b[{_LU}][{_LL}0-9]*(?:\s+[{_LU}0-9][{_LL}0-9]*){{0,2}}\s+(?:Colony|Nagar|Vihar|Enclave|Puram|Extension|Basti|Tola|Layout|Chowk|Bazaar|Bazar|Mandi|Ganj|Bagh|Sarai|Chauraha|Pura|Marg|Lane|Market|Phase|Block|Peth|Para|Palli|Galli|Chawl|Camp|Naka)(?:\s+\d{{1,4}})?\b")),
+    ("LOCALITY", re.compile(r"मोहल्ला\s+[^,\n;]+")),
+    ("LOCALITY", re.compile(rf"[{_DL}]+(?:\s+[{_DL}]+){{0,2}}\s+(?:मोहल्ला|टोला|बस्ती|कॉलोनी|नगर|विहार|बाज़ार|बाजार|मंडी|चौक|गली|गंज|बाग़|बाग|मार्ग|पेठ|पारा|चावल|कैंप|लेन|नाका)(?:\s+[\d०-९]{{1,4}})?(?=\s*[,;\.\-\n\r]|$)")),
+    ("VILLAGE", re.compile(r"(?i)\b(?:Vill\.?|Village|Gram)\s+[^,\n;\-]+")),
+    ("VILLAGE", re.compile(r"(?<![0-9०-९][\s.])(?<![\w0-9०-९])ग्राम\s+[^,\n;\-]+")),
     # Bare village name right before ", Tehsil ..." or ", तहसील ..."
-    ("VILLAGE", re.compile(rf"(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Qtr|Quarter|Flat|Plot|Ward|Sector|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([{_NL}][^\n,]+?)(?=,\s*(?:Tehsil|तहसील)\b)", re.I)),
+    ("VILLAGE", re.compile(rf"(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Qtr|Quarter|Flat|Plot|Ward|Sector|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([{_NL}][^\n,;]+?)(?=,\s*(?:Tehsil|तहसील)\b)", re.I)),
     ("PIN", re.compile(r"(?<!\d)[1-8]\d{5}(?!\d)")),
 ]
 
@@ -351,11 +384,12 @@ def detect_context_name_and_address_spans(
         if _is_valid_name_candidate(cand):
             add_orig_span(m.start(1), m.start(1) + len(cand), "RELATIVE_NAME")
 
-    # 7. Consent signatures, Report of <Name>, Leading "<Name>, W/o", etc.
-    for m in _CONSENT_PERSON_RE.finditer(norm_text):
-        cand = m.group(1).strip()
-        if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
-            add_orig_span(m.start(1), m.start(1) + len(cand), "PATIENT_NAME")
+    # 7. Consent signatures, Report of <Name>, Leading "<Name>, W/o", and narrative clinical note triggers
+    for rx in (_CONSENT_PERSON_RE, _SELF_CONSENT_RE):
+        for m in rx.finditer(norm_text):
+            cand = m.group(1).strip()
+            if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
+                add_orig_span(m.start(1), m.start(1) + len(cand), "PATIENT_NAME")
     for rx, lbl in (
         (_REPORT_OF_RE, "PATIENT_NAME"),
         (_LEADING_REL_SUBJECT_RE, "PATIENT_NAME"),
@@ -363,10 +397,17 @@ def detect_context_name_and_address_spans(
         (_POSSESSIVE_NAME_RE, "PATIENT_NAME"),
         (_HINGLISH_POSTPOS_RE, "PATIENT_NAME"),
         (_TIMED_NOTE_NAME_RE, "PATIENT_NAME"),
+        (_ACTION_SUBJECT_RE, "PATIENT_NAME"),
+        (_BED_PATIENT_RE, "PATIENT_NAME"),
+        (_CALL_NAME_RE, "PATIENT_NAME"),
+        (_INLINE_AGESEX_NAME_RE, "PATIENT_NAME"),
+        (_HTML_CELL_NAME_RE, "PATIENT_NAME"),
+        (_BROUGHT_BY_RE, "RELATIVE_NAME"),
+        (_POSS_REL_NAME_RE, "RELATIVE_NAME"),
     ):
         for m in rx.finditer(norm_text):
             cand = m.group(1).strip()
-            if _is_valid_name_candidate(cand):
+            if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
                 out_lbl = "RELATIVE_NAME" if "(attendant" in norm_text[m.end(1) : m.end(1) + 20].casefold() else lbl
                 add_orig_span(m.start(1), m.start(1) + len(cand), out_lbl)
 
@@ -378,13 +419,15 @@ def detect_context_name_and_address_spans(
 
     # 9. Free-text Address & Village lines
     for m in _VILLAGE_LINE_RE.finditer(norm_text):
-        cand = m.group(1).strip()
+        g_idx = 1 if m.group(1) is not None else 2
+        cand = (m.group(g_idx) or "").strip()
         if cand:
-            add_orig_span(m.start(1), m.start(1) + len(cand), "VILLAGE")
+            add_orig_span(m.start(g_idx), m.start(g_idx) + len(cand), "VILLAGE")
 
     for m in _ADDRESS_LINE_RE.finditer(norm_text):
-        line_start = m.start(1)
-        line_txt = m.group(1)
+        g_idx = 1 if m.group(1) is not None else 2
+        line_start = m.start(g_idx)
+        line_txt = m.group(g_idx) or ""
         for comp_lbl, comp_rx in _FREE_ADDR_COMPONENTS:
             for cm in comp_rx.finditer(line_txt):
                 s_idx = line_start + cm.start(1) if cm.lastindex else line_start + cm.start()

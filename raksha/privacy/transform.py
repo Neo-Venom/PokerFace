@@ -32,14 +32,45 @@ _AGE_COMPACT_RE = re.compile(
 )
 _AGE_YRS_TEXT_RE = re.compile(r"(?i)(?<!x\s)(?<!back\s)\b(\d{1,3})(\s+yrs?\b)(?!\s*(?:back|ago))")
 _TEHSIL_TXT_RE = re.compile(
-    rf"(?i)(\bTehsil\.?\s+|तहसील\s*[:\-]?\s*)([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+){{0,2}})(?=\s*[,\.\-\n\r]|$)"
+    rf"(?i)(\bTehsil\.?\s+|तहसील\s*[:\-]?\s*)(?!अस्पताल|चिकित्सालय|hospital\b)([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+){{0,2}})(?=\s*[,\.\-\n\r]|$)"
 )
 _DISTRICT_TXT_RE = re.compile(
-    rf"(?i)(\bDistt?\.?\s+|\bDistrict\s*[:\-]?\s*|जिला\s*[:\-]?\s*)([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+){{0,2}})(?=\s*[-,\.\n\r]|$)"
+    rf"(?i)(\bDistt?\.?\s+|\bDistrict\s*[:\-]?\s*|[जज़]िला\s*[:\-]?\s*)(?!अस्पताल|चिकित्सालय|संस्थान|सदन|केन्द्र|केंद्र|हॉस्पिटल|hospital\b|clinic\b|sadan\b|trust\b)([{_GEO_CH}]+(?:\s+[{_GEO_CH}]+){{0,2}})(?=\s*[-,\.\n\r]|$)"
 )
 _SEX_LINE_RE = re.compile(
     r"(?i)(\b(?:Sex|Gender|लिंग)\s*[:\-]\s*)(Female|Male|F|M|Other|महिला|पुरुष|अन्य)\b"
 )
+
+
+def _parse_age_for_privacy(val: Any) -> tuple[bool, int | None, str]:
+    """Return (is_age_value_present, parsed_years_0_to_115_or_None, unit_suffix). None years means invalid/corrupt."""
+    if val is None:
+        return False, None, ""
+    if isinstance(val, bool):
+        return False, None, ""
+    if isinstance(val, int):
+        return True, (val if 0 <= val <= 115 else None), ""
+    if isinstance(val, float):
+        import math
+
+        if math.isfinite(val) and val == int(val) and 0 <= int(val) <= 115:
+            return True, int(val), ""
+        return True, None, ""
+    s = str(val).strip()
+    if not s:
+        return False, None, ""
+    m_nb = re.match(r"^\s*(\d{1,3})\s*(days?|d|wks?|weeks?|months?|mos?|माह|महीने|दिन)\s*$", s, re.I)
+    if m_nb:
+        n = int(m_nb.group(1))
+        u = m_nb.group(2).casefold()
+        yrs = 0 if u.startswith(("d", "w", "दि")) else min(115, n // 12)
+        return True, yrs, ""
+    m_int = re.match(r"^\s*(\d{1,3})(\s*(?:Yrs?|वर्ष|Y))?\s*$", s, re.I)
+    if m_int:
+        a = int(m_int.group(1))
+        if 0 <= a <= 115:
+            return True, a, m_int.group(2) or ""
+    return True, None, ""
 
 
 def format_truthful_age_band(age: int, width: int, top_cap: int | None = None) -> str:
@@ -240,14 +271,14 @@ def apply_privacy_to_tabular(
             sval = str(cell)
 
             if ph == "AGE" or hk in ("age", "umar", "age_yrs", "age_val"):
-                m_int = re.match(r"^\s*(\d{1,3})(\s*(?:Yrs?|वर्ष|Y))?\s*$", orig_val, re.I)
-                if m_int:
-                    a = int(m_int.group(1))
-                    if 0 <= a <= 115:
+                has_val, a, unit = _parse_age_for_privacy(orig_val)
+                if has_val:
+                    if a is not None:
                         band = format_truthful_age_band(a, plan.age_band_width, plan.top_age_cap)
-                        unit = m_int.group(2) or ""
                         row[ci] = f"{band}{unit}"
-                        row_changed = True
+                    elif sval != "[AGE]":
+                        row[ci] = "[AGE]"
+                    row_changed = True
             elif ph == "AGE_SEX" or hk == "age_sex":
                 m_as = re.match(r"^\s*(\d{1,3})\s*/\s*([MF]|Female|Male)\s*$", orig_val, re.I)
                 if m_as:
@@ -326,17 +357,12 @@ def _apply_privacy_dict_obj(
             continue
 
         if ph == "AGE" or kl in ("age", "umar", "age_yrs"):
-            a: int | None = None
-            unit = ""
-            if isinstance(val, int) and not isinstance(val, bool) and 0 <= val <= 115:
-                a = val
-            elif isinstance(val, str):
-                m_a = re.match(r"^\s*(\d{1,3})(\s*(?:Yrs?|वर्ष|Y))?\s*$", val, re.I)
-                if m_a and 0 <= int(m_a.group(1)) <= 115:
-                    a = int(m_a.group(1))
-                    unit = m_a.group(2) or ""
-            if a is not None:
-                container[slot] = f"{format_truthful_age_band(a, plan.age_band_width, plan.top_age_cap)}{unit}"
+            has_val, a, unit = _parse_age_for_privacy(val)
+            if has_val and str(val) != "[AGE]":
+                if a is not None:
+                    container[slot] = f"{format_truthful_age_band(a, plan.age_band_width, plan.top_age_cap)}{unit}"
+                else:
+                    container[slot] = "[AGE]"
                 changed = True
         elif (ph == "AGE_SEX" or kl == "age_sex") and isinstance(val, str):
             m_as = re.match(r"^\s*(\d{1,3})\s*/\s*([MF]|Female|Male)\s*$", val, re.I)
@@ -365,6 +391,7 @@ def _apply_privacy_dict_obj(
             or kl in _CLINICAL_DATE_KEYS
             or "date" in kl
             or kl in ("collected", "reported_on", "registered_on", "exported_at", "generated", "generated_at")
+            or (kl == "d" and bool(re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[T\s]|$)", val.strip())))
         ):
             shifted, c_dt = shift_date_str(val, plan.shift_days, month_first=month_first)
             if c_dt:

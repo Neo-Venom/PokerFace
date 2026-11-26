@@ -14,6 +14,22 @@ _ISO_DT_RE = re.compile(
 )
 _DMY_DATE_RE = re.compile(r"(?<![A-Za-z0-9./\-])(\d{1,2})([./\-])(\d{1,2})\2(19\d{2}|20\d{2})(?!\d)")
 _WA_SHORT_DATE_RE = re.compile(r"\[(\d{1,2})/(\d{1,2})/(\d{2})(?=,\s*\d{1,2}:\d{2})")
+_MONTH_MAP = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+_EN_MONTHS_FULL = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+_EN_MONTHS_SHORT = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_DMY_MON_RE = re.compile(
+    r"\b(\d{1,2})([ \t\-]+)(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?([ \t\-,]+)(19\d{2}|20\d{2})\b",
+    re.I,
+)
+_MON_DY_RE = re.compile(
+    r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?([ \t]+)(\d{1,2})(,[ \t]+|[ \t]+)(19\d{2}|20\d{2})\b",
+    re.I,
+)
 
 _EN_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 _EN_WEEKDAYS_SHORT = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -141,6 +157,30 @@ def shift_date_str(val: str, shift_days: int, month_first: bool = False) -> tupl
                 return f"{shifted.day:02d}{sep}{shifted.month:02d}{sep}{shifted.year:04d}", True
             except ValueError:
                 continue
+
+    m_dm = _DMY_MON_RE.fullmatch(ns)
+    if m_dm:
+        d, sep1, mon_s, sep2, y = int(m_dm.group(1)), m_dm.group(2), m_dm.group(3), m_dm.group(4), int(m_dm.group(5))
+        mo = _MONTH_MAP.get(mon_s.casefold())
+        if mo:
+            try:
+                sd = dt.date(y, mo, d) + dt.timedelta(days=shift_days)
+                mname = _EN_MONTHS_SHORT[sd.month - 1] if len(mon_s) <= 4 else _EN_MONTHS_FULL[sd.month - 1]
+                return f"{sd.day}{sep1}{mname}{sep2}{sd.year:04d}", True
+            except ValueError:
+                pass
+
+    m_md = _MON_DY_RE.fullmatch(ns)
+    if m_md:
+        mon_s, sep1, d, sep2, y = m_md.group(1), m_md.group(2), int(m_md.group(3)), m_md.group(4), int(m_md.group(5))
+        mo = _MONTH_MAP.get(mon_s.casefold())
+        if mo:
+            try:
+                sd = dt.date(y, mo, d) + dt.timedelta(days=shift_days)
+                mname = _EN_MONTHS_SHORT[sd.month - 1] if len(mon_s) <= 4 else _EN_MONTHS_FULL[sd.month - 1]
+                return f"{mname}{sep1}{sd.day}{sep2}{sd.year:04d}", True
+            except ValueError:
+                pass
     return val, False
 
 
@@ -199,6 +239,34 @@ def shift_dates_and_weekdays_in_text(text: str, shift_days: int, month_first: bo
             matches.append((s, e, rep, sd))
         except ValueError:
             continue
+
+    for m in _DMY_MON_RE.finditer(text):
+        s, e = m.start(), m.end()
+        if any(not (e <= ms or s >= me) for ms, me, _, _ in matches):
+            continue
+        d, sep1, mon_s, sep2, y = int(m.group(1)), m.group(2), m.group(3), m.group(4), int(m.group(5))
+        mo = _MONTH_MAP.get(mon_s.casefold())
+        if mo:
+            try:
+                sd = dt.date(y, mo, d) + dt.timedelta(days=shift_days)
+                mname = _EN_MONTHS_SHORT[sd.month - 1] if len(mon_s) <= 4 else _EN_MONTHS_FULL[sd.month - 1]
+                matches.append((s, e, f"{sd.day}{sep1}{mname}{sep2}{sd.year:04d}", sd))
+            except ValueError:
+                continue
+
+    for m in _MON_DY_RE.finditer(text):
+        s, e = m.start(), m.end()
+        if any(not (e <= ms or s >= me) for ms, me, _, _ in matches):
+            continue
+        mon_s, sep1, d, sep2, y = m.group(1), m.group(2), int(m.group(3)), m.group(4), int(m.group(5))
+        mo = _MONTH_MAP.get(mon_s.casefold())
+        if mo:
+            try:
+                sd = dt.date(y, mo, d) + dt.timedelta(days=shift_days)
+                mname = _EN_MONTHS_SHORT[sd.month - 1] if len(mon_s) <= 4 else _EN_MONTHS_FULL[sd.month - 1]
+                matches.append((s, e, f"{mname}{sep1}{sd.day}{sep2}{sd.year:04d}", sd))
+            except ValueError:
+                continue
 
     if not matches:
         return text, False

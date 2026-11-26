@@ -47,9 +47,17 @@ def decode_bytes(raw: bytes) -> str:
             raise ValueError("invalid_encoding")
         return text
 
-    # Reject NUL bytes in 8-bit text
+    # Reject binary / un-BOMmed UTF-16 NUL-heavy payloads, while recovering valid UTF-8 with isolated NUL bytes
     if b"\x00" in raw:
-        raise ValueError("invalid_encoding")
+        if raw.startswith((b"\x00", b"%PDF", b"\x89PNG", b"\xff\xd8\xff", b"PK\x03\x04")) or raw.count(b"\x00") > max(4, len(raw) // 50):
+            raise ValueError("invalid_encoding")
+        try:
+            clean_txt = raw.replace(b"\x00", b" ").decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ValueError("invalid_encoding") from exc
+        if any(ord(ch) < 0x20 and ch not in ("\t", "\n", "\r") for ch in clean_txt):
+            raise ValueError("invalid_encoding")
+        return clean_txt
 
     try:
         return raw.decode("utf-8", errors="strict")
@@ -74,6 +82,27 @@ def decode_bytes(raw: bytes) -> str:
         raise ValueError("invalid_encoding") from exc
 
 
+def sniff_csv_delimiter(text: str, ext: str = ".csv") -> str:
+    """Detect tabular delimiter (',', ';', '\\t', '|') safely without breaking single-column CSVs."""
+    if ext == ".tsv":
+        return "\t"
+    lines = [ln for ln in text.splitlines()[:8] if ln.strip()]
+    if not lines:
+        return ","
+    hdr = lines[0]
+    for cand in (";", "\t", "|"):
+        h_cnt = hdr.count(cand)
+        if h_cnt >= 2 and hdr.count(",") == 0:
+            return cand
+        if h_cnt >= 3 and len(lines) >= 2:
+            # Confirm consistent semicolon/tab column structure across first body rows
+            c_h = len(next(csv.reader([hdr], delimiter=cand)))
+            c_b = len(next(csv.reader([lines[1]], delimiter=cand)))
+            if c_h >= 3 and c_h == c_b and hdr.count(",") < h_cnt:
+                return cand
+    return ","
+
+
 def load_tabular(text: str, delimiter: str) -> list[list[str]]:
     rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
     if not rows:
@@ -81,13 +110,26 @@ def load_tabular(text: str, delimiter: str) -> list[list[str]]:
     return rows
 
 
+def _sanitize_json_constants(obj):
+    import math
+
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_json_constants(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_json_constants(x) for x in obj]
+    return obj
+
+
 def load_json_safe(text: str):
-    """Parse JSON safely; supports legitimate deep structures without crashing."""
+    """Parse JSON safely; supports legitimate deep structures and converts non-finite NaN/Inf cleanly."""
     old_limit = sys.getrecursionlimit()
     try:
         if old_limit < 5000:
             sys.setrecursionlimit(5000)
-        return json.loads(text)
+        parsed = json.loads(text)
+        return _sanitize_json_constants(parsed)
     except json.JSONDecodeError as exc:
         raise ValueError("malformed_json") from exc
     except RecursionError as exc:

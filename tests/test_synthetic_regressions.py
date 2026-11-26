@@ -349,3 +349,175 @@ def test_short_first_name_variant_with_shared_mrn_links():
     res = resolve_clusters(evs)
     cids = {res.record_to_cluster[(e.rel, e.loc)] for e in evs}
     assert len(cids) == 1
+
+
+def test_semicolon_csv_formula_nan_sparse_nul_and_unsafe_paths(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RAKSHA_SECRET", "gauntlet-reg-sec-01")
+    inp = tmp_path / "in"
+    out = tmp_path / "out"
+    (inp / "reg").mkdir(parents=True)
+    (inp / "bad").mkdir(parents=True)
+
+    # Semicolon-delimited CSV with landmark, S/o relative with PAN, formula cell, and isolated NUL byte
+    semi_raw = (
+        "MRNo;Name;Name;Age;Sex;Mobile;Address;Remarks\n"
+        "SSH-R-25-035580;TARIQ, Sameer;S/o Late Imtiaz Tariq (PAN: ABCDE1234F);3 months;M;(771) 563-2698;"
+        "H.No. 12, Shivaji Peth, near Clock Tower, Vill. Khed;\"=CMD|' /C calc'!A0 | Vaccine Batch No. 8812045671\"\n"
+        "kvh/op/25-808961;Reena Patel;C/O Mohan\x00Patel;9223372036854775807;F;7896-431855;"
+        "Makan No. 4, Burma Camp Lane 3, Gram Rampur;Born on 14 Nov 1960\n"
+    ).encode("utf-8")
+    (inp / "reg" / "reg_SSH-R-25-035580_export;.csv").write_bytes(semi_raw)
+
+    # JSON with NaN, scientific phone float, short 'n'/'d', and payer_pan that must NOT merge
+    (inp / "reg" / "claims.json").write_text(
+        '{"rows":[{"mrn":"VZC.25.824740","n":"Sameer Tariq","d":"2025-05-01","mobile":9876543210.0,"val":NaN,"payer_pan":"ZZZZZ9999Z"},'
+        '{"mrn":"KVH/OP/25-808961","n":"Reena Patel","d":"2025-05-03","mobile":7896431855.0,"payer_pan":"ZZZZZ9999Z"}]}',
+        encoding="utf-8",
+    )
+    # Genuinely NUL-heavy un-BOMmed UTF-16 corrupt file must still be quarantined
+    (inp / "bad" / "corrupt.txt").write_bytes(b"b\x00a\x00d\x00\xff\xfe\x00\x00")
+
+    assert run_pipeline(inp, out) == 0
+
+    rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    by_in = {e.get("status"): [] for e in rep["files"]}
+    for e in rep["files"]:
+        by_in[e["status"]].append(e)
+    assert len(by_in["sanitized"]) == 2
+    assert len(by_in["quarantined"]) == 1
+
+    csv_ent = next(e for e in by_in["sanitized"] if e["output"].endswith(".csv"))
+    assert ";" not in csv_ent["output"] and "SSH-R-25-035580" not in csv_ent["output"]
+    csv_out = (out / csv_ent["output"]).read_text(encoding="utf-8")
+    for leak in ("SSH-R-25-035580", "kvh/op/25-808961", "TARIQ", "Sameer", "Imtiaz", "ABCDE1234F", "771) 563-2698", "Shivaji Peth", "Clock Tower", "Khed", "7896-431855", "Burma Camp Lane 3", "14 Nov 1960"):
+        assert leak not in csv_out
+    assert "'=CMD" in csv_out
+    assert "Batch No. 8812045671" in csv_out
+    assert ";0-4;" in csv_out or ";0-9;" in csv_out
+    assert ";[AGE];" in csv_out
+
+    claims_ent = next(e for e in by_in["sanitized"] if e["output"].endswith(".json"))
+    claims_txt = (out / claims_ent["output"]).read_text(encoding="utf-8")
+    claims_json = json.loads(claims_txt)  # strict RFC-8259 JSON (no NaN)
+    assert claims_json["rows"][0]["val"] is None
+    assert "VZC.25.824740" not in claims_txt and "Sameer Tariq" not in claims_txt and "Reena Patel" not in claims_txt
+    recs = [json.loads(line) for line in (out / "records.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    claims_psns = [r["patient"] for r in recs if r["file"] == claims_ent["output"]]
+    assert len(claims_psns) == 2 and claims_psns[0] != claims_psns[1]
+
+
+def test_regex_bomb_and_single_line_speed_plus_obfuscations_and_hospital_protection(tmp_path: Path, monkeypatch):
+    import time
+
+    monkeypatch.setenv("RAKSHA_SECRET", "gauntlet-reg-sec-02")
+    inp = tmp_path / "in"
+    out = tmp_path / "out"
+    (inp / "notes").mkdir(parents=True)
+    (inp / "rx").mkdir(parents=True)
+
+    # ReDoS stress + Bidi RLO + HTML entities + narrative templates + Dr.+Surname + hospital header preservation
+    bomb_txt = (
+        "Phone: " + ("9" * 40000) + "\n" + ("A" * 80000) + "\ncall Harpreet Brar on 0091 90 1090 3287\n"
+    )
+    (inp / "notes" / "stress.txt").write_text(bomb_txt, encoding="utf-8")
+    (inp / "rx" / "rx_hi.txt").write_text(
+        "कोंकण ग्रामीण मिशन अस्पताल — पर्चा\n"
+        "Pt लखन Lepcha (24M) seen by Dr. Kavita Lepcha.\n"
+        "पिता: सेल्वराज उरांव | फ़ोन: ७०००६३५४४८\n"
+        "I, Pirzada Ruhullah, consent to procedure.\n"
+        "Brought by brother Jayesh babu | Bed pe Reema Das (35Y/F) resident of Sonarpur\n"
+        "<td>&#2346;&#2366;&#2306;&#2337;&#2369;&#2352;&#2306;&#2327;&#32;&#2313;&#2352;&#2366;&#2306;&#2357;</td>\n"
+        "Reverse: \u202e0123456789\u202c\n",
+        encoding="utf-8",
+    )
+
+    t0 = time.perf_counter()
+    assert run_pipeline(inp, out) == 0
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 10.0
+
+    st_out = (out / "sanitized" / "notes" / "stress.txt").read_text(encoding="utf-8")
+    assert "Harpreet Brar" not in st_out and "90 1090 3287" not in st_out
+
+    rx_out = (out / "sanitized" / "rx" / "rx_hi.txt").read_text(encoding="utf-8")
+    assert "कोंकण ग्रामीण मिशन अस्पताल" in rx_out
+    assert "Dr. Kavita Lepcha" in rx_out
+    for leak in ("सेल्वराज", "उरांव", "७०००६३५४४८", "Pirzada Ruhullah", "Jayesh", "Reema Das", "Sonarpur", "पांडुरंग", "2346", "9876543210"):
+        assert leak not in rx_out
+
+
+def test_twin_father_son_non_merge_and_cross_script_uidai_zero_width_linkage():
+    from raksha.identity.evidence import NameForm, RecordEvidence, RelativeClue, make_name_form
+    from raksha.identity.linker import CORE_MERGE_THRESHOLD, resolve_clusters, score_pair
+
+    # 1. Twins: same DOB, same phone, same village, same PIN, same relative, rhyming first name -> must NOT merge
+    t1 = RecordEvidence(
+        rel="t1.csv", loc="row:0", content_hash="ht1", hospital="h1",
+        names=[make_name_form("Rohan Sharma")], relatives=[RelativeClue("S/o", ("vijay", "sharma"), ("wijy", "srm"))],
+        dob="2010-05-12", sex="M", phones={"9811122233"}, villages={"rampur"}, pins={"302001"},
+    )
+    t2 = RecordEvidence(
+        rel="t2.csv", loc="row:0", content_hash="ht2", hospital="h1",
+        names=[make_name_form("Sohan Sharma")], relatives=[RelativeClue("S/o", ("vijay", "sharma"), ("wijy", "srm"))],
+        dob="2010-05-12", sex="M", phones={"9811122233"}, villages={"rampur"}, pins={"302001"},
+    )
+    sc_tw, conf_tw = score_pair(t1, t2)
+    assert conf_tw or sc_tw < CORE_MERGE_THRESHOLD
+
+    # 2. Father & son sharing name/phone/village with >=10 yr age gap and no exclusive ID -> must NOT merge
+    f1 = RecordEvidence(
+        rel="f1.csv", loc="row:0", content_hash="hf1", hospital="h1",
+        names=[make_name_form("Rajesh Verma")], sex="M", age=58, phones={"9822233344"}, villages={"khed"},
+    )
+    s1 = RecordEvidence(
+        rel="s1.csv", loc="row:0", content_hash="hs1", hospital="h1",
+        names=[make_name_form("Rajesh Verma")], sex="M", age=28, phones={"9822233344"}, villages={"khed"},
+    )
+    sc_fs, conf_fs = score_pair(f1, s1)
+    assert conf_fs or sc_fs < CORE_MERGE_THRESHOLD
+
+    # 3. Zero-width char inside name + cross-script borrowing ("Ignatius Qureshi" / "Ignatius Q." <-> "इग्नेशियस क़ुरैशी")
+    zw_nf = make_name_form("An\u200birban Gowda")
+    assert zw_nf is not None and zw_nf.norm_tokens == ("anirban", "gowda")
+    a_deva = RecordEvidence(
+        rel="reg.tsv", loc="row:0", content_hash="hi1", hospital="h1",
+        names=[make_name_form("इग्नेशियस क़ुरैशी")], sex="M", age=48, global_mrns={"BCT79792316"},
+        relatives=[RelativeClue("S/o", ("bhavik", "qureshi"), ("bwik", "kuresi"))], has_strong_id=True,
+    )
+    b_init = RecordEvidence(
+        rel="opd.json", loc="/visits/0", content_hash="en1", hospital="h2",
+        names=[make_name_form("Ignatius Q.")], sex="M", age=48, global_mrns={"VZC.25.038470"}, phones={"9391157395"}, has_strong_id=True,
+    )
+    a_deva.phones.add("9391157395")
+    c_full = RecordEvidence(
+        rel="wa.txt", loc="doc", content_hash="wa1", hospital="",
+        names=[make_name_form("Ignatius Qureshi")], sex="M", age=48,
+        relatives=[RelativeClue("", ("bhavik",), ("bwik",))],
+    )
+    res = resolve_clusters([a_deva, b_init, c_full])
+    assert res.record_to_cluster[("reg.tsv", "row:0")] == res.record_to_cluster[("opd.json", "/visits/0")]
+    assert res.record_to_cluster[("reg.tsv", "row:0")] == res.record_to_cluster[("wa.txt", "doc")]
+
+
+def test_single_token_calling_name_with_md_alias_prefix():
+    """Single-token calling name ('Shahid') must not strongly disagree with 'Md./Mohammad Shahid'."""
+    from raksha.identity.evidence import make_name_form
+    from raksha.identity.name_compare import compare_two_names
+
+    frag = make_name_form("Shahid", is_fragment=True)
+    full_mohammad = make_name_form("Mohammad Shahid")
+    full_md = make_name_form("Md. Shahid")
+    full_hi = make_name_form("मोहम्मद शाहिद")
+    unrelated = make_name_form("Zubair")
+    ambig_md = make_name_form("Md.")
+
+    assert frag and full_mohammad and full_md and full_hi and unrelated and ambig_md
+    for full in (full_mohammad, full_md, full_hi):
+        cmp = compare_two_names(frag, full)
+        assert cmp.given_only_match is True
+        assert cmp.strong_disagreement is False
+
+    assert compare_two_names(unrelated, full_md).strong_disagreement is True
+    amb_cmp = compare_two_names(ambig_md, full_md)
+    assert amb_cmp.given_only_match is False and amb_cmp.exact_norm is False
+

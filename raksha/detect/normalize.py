@@ -42,9 +42,11 @@ def is_deva_char(ch: str) -> bool:
 
 def fold_latin_accents(text: str) -> str:
     """Fold composed or decomposed Latin accents to ASCII letters while preserving Devanagari."""
+    if text.isascii():
+        return text
     out: list[str] = []
     for ch in unicodedata.normalize("NFKC", text):
-        if "\u0900" <= ch <= "\u097F":
+        if ord(ch) < 128 or "\u0900" <= ch <= "\u097F":
             out.append(ch)
         else:
             for sub in unicodedata.normalize("NFKD", ch):
@@ -140,16 +142,31 @@ class NormalizedView:
     clean_to_orig: list[tuple[int, int]]
     latin_folded: str
     folded_to_orig: list[tuple[int, int]]
+    _is_identity: bool = False
 
     def map_clean_span(self, start: int, end: int) -> tuple[int, int]:
-        if start >= end or not self.clean_to_orig:
+        if start >= end:
+            return (0, 0)
+        if self._is_identity:
+            n = len(self.original)
+            s = max(0, min(start, n))
+            e = max(s, min(end, n))
+            return (s, e)
+        if not self.clean_to_orig:
             return (0, 0)
         s = max(0, min(start, len(self.clean_to_orig) - 1))
         e = max(s + 1, min(end, len(self.clean_to_orig)))
         return (self.clean_to_orig[s][0], self.clean_to_orig[e - 1][1])
 
     def map_folded_span(self, start: int, end: int) -> tuple[int, int]:
-        if start >= end or not self.folded_to_orig:
+        if start >= end:
+            return (0, 0)
+        if self._is_identity:
+            n = len(self.original)
+            s = max(0, min(start, n))
+            e = max(s, min(end, n))
+            return (s, e)
+        if not self.folded_to_orig:
             return (0, 0)
         s = max(0, min(start, len(self.folded_to_orig) - 1))
         e = max(s + 1, min(end, len(self.folded_to_orig)))
@@ -158,12 +175,21 @@ class NormalizedView:
 
 def build_normalized_view(text: str) -> NormalizedView:
     """Build NFC, zero-width-free, digit-ASCII, homoglyph-folded, and Devanagari->Latin representations with exact offset maps."""
+    if text.isascii() and len(text) > 10000:
+        return NormalizedView(
+            original=text,
+            clean=text,
+            clean_to_orig=[],
+            latin_folded=text,
+            folded_to_orig=[],
+            _is_identity=True,
+        )
     # Step 1: group original chars into combining clusters, stripping zero-width chars
     clusters: list[tuple[str, int, int]] = []
     for idx, ch in enumerate(text):
         if ch in _ZERO_WIDTH:
             continue
-        if clusters and unicodedata.combining(ch) > 0:
+        if clusters and ord(ch) >= 0x0300 and unicodedata.combining(ch) > 0:
             prev_txt, p_start, _ = clusters[-1]
             clusters[-1] = (prev_txt + ch, p_start, idx + 1)
         else:
@@ -172,6 +198,10 @@ def build_normalized_view(text: str) -> NormalizedView:
     clean_chars: list[str] = []
     clean_to_orig: list[tuple[int, int]] = []
     for raw_seg, o_start, o_end in clusters:
+        if len(raw_seg) == 1 and ord(raw_seg[0]) < 128:
+            clean_chars.append(raw_seg)
+            clean_to_orig.append((o_start, o_end))
+            continue
         seg = unicodedata.normalize("NFC", raw_seg)
         # Fold NFKC compatibility forms (fullwidth digits/ASCII, ligatures) without breaking Devanagari nukta
         if not ("\u0900" <= seg[0] <= "\u097F"):

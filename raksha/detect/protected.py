@@ -65,17 +65,24 @@ _ICD_AND_HISTORY_RE = re.compile(
     re.I,
 )
 _HINDI_CLINICAL_RE = re.compile(
-    r"\d+\s*दिन\s*से\s*(?:बुखार|पेट\s*दर्द|खांसी|कमजोरी|उल्टी|दस्त)"
-    r"|\d+\s*din\s*se\s*(?:bukhar|pet\s*mein\s*dard|dard|khansi)"
+    r"(?<!\d)\d+\s*दिन\s*से\s*(?:बुखार|पेट\s*दर्द|खांसी|कमजोरी|उल्टी|दस्त)"
+    r"|(?<!\d)\d+\s*din\s*se\s*(?:bukhar|pet\s*mein\s*dard|dard|khansi)"
     r"|\b(?:bukhar|dawai|khana\s+kam|ulti|band\s+ho\s+gayi|theek\s+se\s+neend)\b"
     r"|(?:फेफड़ों\s+की\s+टीबी|निमोनिया|मलेरिया|टाइफाइड|डेंगू|मधुमेह|थायराइड|उच्च\s+रक्तचाप|दमा(?:\s+रोग)?|पीलिया|"
     r"पैरों\s+में\s+सूजन|कमज़ोरी\s+और\s+चक्कर\s+आना|कमजोरी\s+और\s+चक्कर\s+आना|बलगम\s+वाली\s+खांसी(?:\s+और\s+सांस\s+फूलना)?|"
     r"तीव्र\s+आंत्रशोथ|सीओपीडी|रक्ताल्पता|मूत्र\s+संक्रमण|दिन\s+में\s+(?:एक|दो|तीन|चार)\s+बार|"
     r"रोज़\s+(?:सुबह|शाम|रात)|खाली\s+पेट|भर्ती\s+(?:की\s+)?(?:तिथि|तारीख)|छुट्टी\s+की\s+तारीख|विमोचन\s+(?:तिथि|पत्र)|"
     r"सलाहकार\s+चिकित्सक)"
-    r"|[\d०-९]+(?:\.[\d०-९]+)?\s*(?:मिग्रा|ग्राम|मिली|दिन|वर्षों?(?:\s+से)?)\b"
+    r"|(?<![\d०-९.])[\d०-९]+(?:\.[\d०-९]+)?\s*(?:मिग्रा|ग्राम|मिली|दिन|वर्षों?(?:\s+से)?)\b"
+    r"|\b(?:Batch|Lot|Serial)\s*(?:No\.?|Num\.?|#)?\s*[:.#\-]?\s*\d{4,}\b"
     r"|\b(?:आईवी|ओडी|बीडी)\b",
     re.I,
+)
+_HOSPITAL_PHRASE_RE = re.compile(
+    r"(?<![A-Za-z\u0900-\u097F])"
+    r"(?:[A-Z\u0900-\u097F][A-Za-z\u0900-\u097F.'\-]{0,24}[ \t]+){1,5}"
+    r"(?:Hospital|Clinic|Sadan|Trust|Diagnostics?|Labs?|Chikitsalaya|Aspatal|Sevasadan|Sansthan|Medical[ \t]+(?:Centre|Center|College)|Nursing[ \t]+Home|चिकित्सालय|अस्पताल|हॉस्पिटल|सेवासदन|सेवाश्रम)"
+    r"(?![A-Za-z\u0900-\u097F])"
 )
 
 
@@ -116,7 +123,7 @@ class ClinicalLexicon:
             for m in self._term_re.finditer(norm_text):
                 add_clean(m.start(), m.end())
 
-        for rx in (_DOSAGE_FORM_DRUG_RE, _DRUG_SUFFIX_RE, _DOSE_RE, _FREQ_DUR_RE, _VITALS_RE, _LAB_UNIT_RE, _ICD_AND_HISTORY_RE, _HINDI_CLINICAL_RE):
+        for rx in (_DOSAGE_FORM_DRUG_RE, _DRUG_SUFFIX_RE, _DOSE_RE, _FREQ_DUR_RE, _VITALS_RE, _LAB_UNIT_RE, _ICD_AND_HISTORY_RE, _HINDI_CLINICAL_RE, _HOSPITAL_PHRASE_RE):
             for m in rx.finditer(norm_text):
                 # Do NOT mark "Ward N" inside an Address / Mohalla / Tehsil context as protected clinical ward!
                 seg = m.group(0)
@@ -124,6 +131,20 @@ class ClinicalLexicon:
                     ctx = norm_text[max(0, m.start() - 50) : min(len(norm_text), m.end() + 40)].casefold()
                     if any(w in ctx for w in ("address", "mohalla", "tehsil", "distt", "h.no", "house", "makan", "c/o", "पता")):
                         continue
+                if rx is _HOSPITAL_PHRASE_RE:
+                    # Never protect landmark references inside Address lines ("behind City Hospital", "near Apollo Hospital")
+                    before_h = norm_text[max(0, m.start() - 30) : m.start()].casefold()
+                    first_w = seg.split()[0].casefold()
+                    if first_w in ("behind", "near", "opp", "opposite", "beside", "parchi", "prescription", "report", "address", "patient", "visit", "from", "at"):
+                        continue
+                    if re.search(r"(?:\b(?:near|opp\.?|opposite|behind|beside|address|पता)\s*[:\-]?\s*|,\s*[^,\n]{0,20}\b(?:near|behind|opp\.?|beside)\s*)$", before_h):
+                        continue
+                    # Trim if an Address: line precedes it on the same line
+                    line_before = norm_text[norm_text.rfind("\n", 0, m.start()) + 1 : m.start()].casefold()
+                    if re.match(r"^\s*(?:address|पता|निवासी)\s*[:\-]", line_before):
+                        continue
+                    add_clean(m.start(), m.end())
+                    continue
                 add_clean(m.start(), m.end())
 
         return resolve_overlaps(prot)

@@ -68,14 +68,18 @@ def compare_two_names(a: NameForm, b: NameForm) -> NameComparison:
         # Never match standalone ambiguous "md" / "mohd"
         if single_t in ("md", "mohd"):
             return NameComparison()
-        if (
-            single_t == other_t[0]
-            or single_p == other_p[0]
-            or _vowel_fold(single_p) == _vowel_fold(other_p[0])
-            or fuzz.ratio(single_t, other_t[0]) >= 86.0
-            or (single_p[0] == other_p[0][0] and fuzz.ratio(single_p, other_p[0]) >= 80.0)
-        ):
-            return NameComparison(given_only_match=True, fuzzy_ratio=fuzz.ratio(single_t, other_t[0]))
+        targets = [(other_t[0], other_p[0])]
+        if other_t[0] in _MD_ALIASES and len(other_t) >= 2 and len(other_t[1]) >= 2:
+            targets.append((other_t[1], other_p[1]))
+        for cand_t, cand_p in targets:
+            if (
+                single_t == cand_t
+                or single_p == cand_p
+                or _vowel_fold(single_p) == _vowel_fold(cand_p)
+                or fuzz.ratio(single_t, cand_t) >= 86.0
+                or (cand_p and single_p and single_p[0] == cand_p[0] and fuzz.ratio(single_p, cand_p) >= 80.0)
+            ):
+                return NameComparison(given_only_match=True, fuzzy_ratio=fuzz.ratio(single_t, cand_t))
         return NameComparison(strong_disagreement=True)
 
     # Multi-token full comparison
@@ -101,14 +105,38 @@ def compare_two_names(a: NameForm, b: NameForm) -> NameComparison:
         if (ta[0] in _MD_ALIASES and tb[0] in _MD_ALIASES) and _token_match_or_alias(ta[-1], tb[-1], pa[-1], pb[-1]):
             return NameComparison(alias_corroborated=True, fuzzy_ratio=max(fuzzy, 92.0), phonetic_match=True)
 
-    # 5. Initials match ("M. Shahid" vs "Mohammad Shahid" or "K. R. Menon" vs "Kavita R Menon") - corroborated by surname
-    if (len(ta[0]) == 1 and tb[0].startswith(ta[0]) or len(tb[0]) == 1 and ta[0].startswith(tb[0])) and _token_match_or_alias(ta[-1], tb[-1], pa[-1], pb[-1]):
-        return NameComparison(initials_corroborated=True, fuzzy_ratio=fuzzy, phonetic_match=(pa[-1] == pb[-1]))
+    # 5. Initials match ("M. Shahid" vs "Mohammad Shahid", "K. R. Menon" vs "Kavita R Menon", or trailing "Jitendra B." vs "Jitendra Bhattacharya")
+    if (
+        ((len(ta[0]) == 1 and tb[0].startswith(ta[0])) or (len(tb[0]) == 1 and ta[0].startswith(tb[0])))
+        and _token_match_or_alias(ta[-1], tb[-1], pa[-1], pb[-1])
+    ) or (
+        _token_match_or_alias(ta[0], tb[0], pa[0], pb[0])
+        and ((len(ta[-1]) == 1 and tb[-1].startswith(ta[-1])) or (len(tb[-1]) == 1 and ta[-1].startswith(tb[-1])))
+    ):
+        return NameComparison(
+            initials_corroborated=True,
+            fuzzy_ratio=fuzzy,
+            phonetic_match=(pa[-1] == pb[-1] or pa[0] == pb[0]),
+        )
 
     # 6. Phonetic match (candidate/corroborated)
     phon_eq = (pa == pb) or (len(pa) == len(pb) and all(_token_match_or_alias(x, y, px, py) for x, y, px, py in zip(ta, tb, pa, pb)))
     if phon_eq or fuzzy >= 85.0:
         return NameComparison(fuzzy_ratio=fuzzy, phonetic_match=phon_eq)
+
+    # Cross-script foreign/borrowings transliteration & initial tolerance (e.g. "Ignatius Qureshi" / "Ignatius Q." <-> "इग्नेशियस क़ुरैशी"):
+    # only when scripts differ AND surname/initial matches AND first-name phonetic keys share prefix & strong similarity.
+    is_cross_script = _DEVA_RE_CHECK(a.raw) != _DEVA_RE_CHECK(b.raw)
+    if is_cross_script and len(ta) >= 2 and len(tb) >= 2:
+        first_cross_ok = (
+            fuzz.ratio(pa[0], pb[0]) >= 75.0
+            or fuzz.ratio(_vowel_fold(pa[0]), _vowel_fold(pb[0])) >= 78.0
+            or (pa[0][0] == pb[0][0] and (ta[0][:3] == tb[0][:3] or pa[0][:3] == pb[0][:3]) and fuzz.ratio(pa[0], pb[0]) >= 65.0)
+        )
+        if first_cross_ok and _token_match_or_alias(ta[-1], tb[-1], pa[-1], pb[-1]):
+            return NameComparison(fuzzy_ratio=max(fuzzy, 75.0), phonetic_match=True)
+        if first_cross_ok and ((len(ta[-1]) == 1 and tb[-1].startswith(ta[-1])) or (len(tb[-1]) == 1 and ta[-1].startswith(tb[-1]))):
+            return NameComparison(initials_corroborated=True, fuzzy_ratio=max(fuzzy, 75.0), phonetic_match=True)
 
     # 7. Check strong disagreement (neither first nor last token matches fuzzily/phonetically)
     first_sim = fuzz.ratio(ta[0], tb[0])

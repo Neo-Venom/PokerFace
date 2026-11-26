@@ -176,9 +176,11 @@ class AliasRegistry:
         for win in (3, 2):
             for i in range(0, max(0, n_w - win + 1)):
                 w_slice = words[i : i + win]
-                # Ensure tokens are adjacent on the same line (no newline gap)
+                # Ensure tokens are adjacent on the same line and not separated by '/' (e.g. "S/o Debashish")
                 between = clean[w_slice[0][1] : w_slice[-1][2]]
-                if "\n" in between:
+                if "\n" in between or "/" in between:
+                    continue
+                if len(w_slice[0][0].strip(".")) == 1 and w_slice[0][0][0].islower():
                     continue
                 phrase = " ".join(w[0] for w in w_slice)
                 phrase_cf = phrase.casefold()
@@ -217,9 +219,9 @@ class AliasRegistry:
             if allow_single_first_name and w_cf not in _GENERIC_SINGLE_TOKENS:
                 hit = self.first_names.get(w_cf) or self.first_names.get(phonetic_key(w_cf))
                 if hit:
-                    before = clean[max(0, ws - 15) : ws].casefold()
-                    # Never propose if immediately preceded by Dr./डॉ.
-                    if re.search(r"(?:\bdr\.?|डॉ\.?|consultant)\s*$", before):
+                    before = clean[max(0, ws - 35) : ws].casefold()
+                    # Never propose if preceded by Dr./डॉ./consultant (even across 1-2 given name tokens like "Dr. Kavita Lepcha")
+                    if re.search(r"(?:\bdr\.?|डॉ\.?|डॉक्टर|consultant)\s*(?:[a-z\u0900-\u097f.]+\s+){0,2}$", before):
                         continue
                     os_, oe_ = nv.map_clean_span(ws, we)
                     if oe_ > os_:

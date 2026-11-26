@@ -142,14 +142,18 @@ def score_pair(a: RecordEvidence, b: RecordEvidence) -> tuple[float, bool]:
         w -= 5.5
 
     # 6. DOB & Age consistency
+    yr_diff: int | None = None
     if a.dob and b.dob:
         if a.dob == b.dob:
             w += 5.5
         else:
             w -= 7.5
+        if len(a.dob) >= 4 and len(b.dob) >= 4 and a.dob[:4].isdigit() and b.dob[:4].isdigit():
+            yr_diff = abs(int(a.dob[:4]) - int(b.dob[:4]))
     else:
         ad = _age_diff(a, b)
         if ad is not None:
+            yr_diff = ad
             if ad <= 2:
                 w += 2.0
             elif ad >= 5:
@@ -190,6 +194,37 @@ def score_pair(a: RecordEvidence, b: RecordEvidence) -> tuple[float, bool]:
     if strong_id_match and lvl == "disagree" and not has_exclusive_govt_match and both_full_names:
         w -= 5.0
 
+    # Generational (father/son, mother/daughter) and twin/sibling anti-merge guards when no exclusive ID matches:
+    if not has_exclusive_govt_match and not same_scoped_mrn and not same_global_mrn:
+        if yr_diff is not None and yr_diff >= 10:
+            return -50.0, True
+        if lvl == "disagree" and both_full_names:
+            return -50.0, True
+        if lvl == "weak" and both_full_names:
+            from rapidfuzz import fuzz as _fuzz
+            from raksha.identity.name_compare import _vowel_fold
+
+            any_first_ok = False
+            for na in a.names:
+                for nb in b.names:
+                    if not na.norm_tokens or not nb.norm_tokens:
+                        continue
+                    t1, t2 = na.norm_tokens[0], nb.norm_tokens[0]
+                    p1, p2 = na.phonetic_tokens[0], nb.phonetic_tokens[0]
+                    if (
+                        t1 == t2
+                        or p1 == p2
+                        or _vowel_fold(p1) == _vowel_fold(p2)
+                        or _fuzz.ratio(t1, t2) >= 85.0
+                        or (p1[0] == p2[0] and _fuzz.ratio(p1, p2) >= 80.0)
+                    ):
+                        any_first_ok = True
+                        break
+                if any_first_ok:
+                    break
+            if not any_first_ok:
+                return -50.0, True
+
     return w, False
 
 
@@ -215,12 +250,15 @@ def _build_candidate_pairs(evidences: list[RecordEvidence]) -> set[tuple[int, in
             blocks[f"gmrn:{mrn}"].append(idx)
 
         # Block 2: Transliterated full name phonetic key (and sorted tokens)
+        from raksha.identity.name_compare import _vowel_fold
+
         for nf in ev.names:
             if len(nf.phonetic_tokens) >= 2:
-                blocks[f"fn:{'_'.join(nf.phonetic_tokens)}"].append(idx)
-                blocks[f"fns:{'_'.join(sorted(nf.phonetic_tokens))}"].append(idx)
-                # Also first-letter + surname for initials
-                blocks[f"init:{nf.phonetic_tokens[0][0]}_{nf.phonetic_tokens[-1]}"].append(idx)
+                v_toks = tuple(_vowel_fold(p) for p in nf.phonetic_tokens)
+                blocks[f"fn:{'_'.join(v_toks)}"].append(idx)
+                blocks[f"fns:{'_'.join(sorted(v_toks))}"].append(idx)
+                # Also first-letter + vowel-folded surname for initials/cross-script borrowings
+                blocks[f"init:{v_toks[0][0]}_{v_toks[-1]}"].append(idx)
 
             first_p = nf.phonetic_tokens[0]
             if first_p in ("md", "mohd") and len(nf.phonetic_tokens) >= 2:

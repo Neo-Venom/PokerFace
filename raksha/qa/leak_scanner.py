@@ -31,13 +31,13 @@ _QA_RAW_PATTERNS: list[tuple[str, re.Pattern]] = [
 ]
 
 _QA_DOCTOR_BEFORE_RE = re.compile(
-    r"(?i)(?:\bdr\.?|doctor|डॉ\.?|डॉक्टर|consultant|prescriber|ref(?:erred)?\s*by)\s*[:\-]?\s*(?:dr\.?\s*)?$"
+    r"(?i)(?:\bdr\.?|doctor|डॉ\.?|डॉक्टर|consultant|prescriber|ref(?:erred)?\s*by)\s*[:\-]?\s*(?:dr\.?\s*)?(?:[A-Z\u0900-\u097F][A-Za-z.\-\u0900-\u097F']{0,24}[ \t]+){0,2}$"
 )
 _QA_CLINICAL_AFTER_RE = re.compile(
     r"(?i)^(?:'s\s+(?:disease|syndrome|palsy|lymphoma|sign)|\s+(?:disease|syndrome|palsy|workers?)|\s*(?:/uL|mg/dL|g/dL|mmol/L|mIU/L|mg\b|mcg\b|ml\b|IU\b|%|mmHg|/min|bpm|days?\b|wks?\b|[-–]\s*\d+))"
 )
 _QA_CLINICAL_BEFORE_RE = re.compile(
-    r"(?i)(?:platelet(?:\s+count)?|wbc(?:\s+count)?|range|ref(?:erence)?\s*range|bp|pulse|temp|dose|tab\.?|cap\.?|inj\.?|dolo|paracetamol|tehsil|distt\.?|district|hospital|तहसील|जिला)\s*[:=\-]?\s*$"
+    r"(?i)(?:platelet(?:\s+count)?|wbc(?:\s+count)?|range|ref(?:erence)?\s*range|bp|pulse|temp|dose|batch(?:\s*(?:no|num|number)\.?)?|lot(?:\s*(?:no|num|number)\.?)?|serial(?:\s*(?:no|num|number)\.?)?|tab\.?|cap\.?|inj\.?|dolo|paracetamol|tehsil|distt\.?|district|hospital|तहसील|जिला)\s*[:.#=\-]?\s*$"
 )
 
 
@@ -58,13 +58,15 @@ class AuditSummary:
     files_quarantined_qa: int = 0
 
 
-def _qa_norm_with_map(text: str) -> tuple[str, list[tuple[int, int]]]:
+def _qa_norm_with_map(text: str) -> tuple[str, list[tuple[int, int]] | None]:
     """Independent NFKC + zero-width strip + Devanagari-digit normalization with exact offset map."""
+    if text.isascii() and len(text) > 10000:
+        return text, None
     clusters: list[tuple[str, int, int]] = []
     for idx, ch in enumerate(text):
         if ch in _ZERO_WIDTH_SET:
             continue
-        if clusters and unicodedata.combining(ch) > 0:
+        if clusters and ord(ch) >= 0x0300 and unicodedata.combining(ch) > 0:
             prev, ps, _ = clusters[-1]
             clusters[-1] = (prev + ch, ps, idx + 1)
         else:
@@ -73,6 +75,10 @@ def _qa_norm_with_map(text: str) -> tuple[str, list[tuple[int, int]]]:
     out_chars: list[str] = []
     out_map: list[tuple[int, int]] = []
     for seg, os_, oe_ in clusters:
+        if len(seg) == 1 and ord(seg[0]) < 128:
+            out_chars.append(seg)
+            out_map.append((os_, oe_))
+            continue
         nseg = unicodedata.normalize("NFKC", seg)
         for c in nseg:
             code = ord(c)
@@ -157,7 +163,12 @@ def _find_hits(
     ignored = 0
 
     def map_span(ns: int, ne: int) -> tuple[int, int]:
-        if ns >= ne or not offset_map:
+        if ns >= ne:
+            return (0, 0)
+        if offset_map is None:
+            n = len(text)
+            return (max(0, min(ns, n)), max(0, min(ne, n)))
+        if not offset_map:
             return (0, 0)
         s = max(0, min(ns, len(offset_map) - 1))
         e = max(s + 1, min(ne, len(offset_map)))
@@ -219,6 +230,24 @@ def _rescrub_string_and_b64(
 ) -> tuple[str, bool]:
     """Scan a scalar string (and any embedded base64 UTF-8 payload), returning (cleaned, changed)."""
     changed = False
+    if "\u202e" in val:
+        val = re.sub(r"\u202e([^\u202c\n\r]*)\u202c?", lambda m: m.group(1)[::-1], val)
+        val = re.sub(r"[\u202a-\u202e\u2066-\u2069]", "", val)
+        changed = True
+    if "&#" in val:
+        def _ent_repl(m: re.Match) -> str:
+            tok = m.group(1)
+            try:
+                cp = int(tok[1:], 16) if tok[0] in ("x", "X") else int(tok)
+                if cp < 32 or cp in (0x22, 0x26, 0x27, 0x3C, 0x3E) or cp > 0x10FFFF:
+                    return m.group(0)
+                return chr(cp)
+            except (ValueError, OverflowError):
+                return m.group(0)
+        dec_ent = re.sub(r"&#(x[0-9a-fA-F]{1,5}|\d{1,5});", _ent_repl, val)
+        if dec_ent != val:
+            val = dec_ent
+            changed = True
     s = val.strip()
     if len(s) >= 24 and _B64_SCAN_RE.fullmatch(s):
         try:

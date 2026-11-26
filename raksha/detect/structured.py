@@ -1,6 +1,7 @@
 """Step A: Value-first structured field classifier, header/key sanitizer, and composite address scrubber."""
 from __future__ import annotations
 
+import functools
 import re
 import unicodedata
 import urllib.parse
@@ -24,7 +25,16 @@ _LU = LATIN_UPPER_CLASS
 _LL = LATIN_LETTER_CLASS
 
 # --------------------------------------------------------------------------- value matchers
-_RE_PHONE = re.compile(r"^(?:\+?91[\s\-]?|0)?[6-9]\d{4}[\s\-]?\d{5}$|^(?:\+?91[\s\-]?|0)?[6-9]\d{2}[\s\-]?\d{3}[\s\-]?\d{4}$")
+_RE_PHONE = re.compile(
+    r"^(?:"
+    r"(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?\(\s*0?[1-9]\d{1,4}\s*\)[\s.\-]?\d{3,4}[\s.\-]?\d{4}"
+    r"|(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?[6-9]\d{4}[\s.\-]?\d{5}"
+    r"|(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?[6-9]\d{2}[\s.\-]?\d{3}[\s.\-]?\d{4}"
+    r"|(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?[6-9]\d{3}[\s.\-]?\d{3}[\s.\-]?\d{3}"
+    r"|(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?[6-9]\d[\s.\-]?\d{4}[\s.\-]?\d{4}"
+    r")(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?$",
+    re.I,
+)
 _RE_PHONE_MASKED = re.compile(r"^[6-9]\d[xX*]{4,6}\d{2,4}$")
 _RE_AADHAAR = re.compile(r"^\d{4}[\s\-]?\d{4}[\s\-]?\d{4}$")
 _RE_AADHAAR_MASKED = re.compile(r"^[xX*]{4}[\s\-]?[xX*]{4}[\s\-]?\d{4}$")
@@ -34,30 +44,36 @@ _RE_PAN = re.compile(r"^[A-Z]{5}\d{4}[A-Z]$")
 _RE_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _RE_INSURANCE = re.compile(r"^(?:PMJAY[-/A-Z0-9]{4,}|POL/\d+/\d+|AB-PMJAY[-/A-Z0-9]+|CGHS[-/A-Z0-9]+|ESIS[-/A-Z0-9]+)$", re.I)
 _RE_MRN = re.compile(
-    r"^(?!LAB-|ORD-|BL/|OPD/|LOINC|ICD)(?:"
+    r"^(?!LAB-|ORD-|BL/|OPD/|LOINC|ICD|bl/|opd/|mg/|ml/|iu/|mcg/|http)(?:"
     r"[A-Z]{2,6}(?:/[A-Z]{1,6})?/\d{2,4}/\d{3,}"
+    r"|[A-Za-z]{2,6}/[A-Za-z]{1,6}/\d{2,4}[-/]\d{3,}"
+    r"|[A-Za-z]{2,6}(?:\.[A-Za-z0-9]{1,6}){0,2}\.\d{2,4}\.\d{3,}"
     r"|[A-Z]{2,6}:[A-Z0-9]{2,8}:[A-Z0-9]{1,8}:\d{3,}"
     r"|[A-Z]{2,6}_[A-Z0-9]{2,8}_\d{2,4}_\d{3,}"
-    r"|[A-Z]{2,6}-[A-Z0-9]{1,5}-\d{3,}"
+    r"|[A-Z]{2,6}(?:-[A-Z0-9]{1,6}){1,2}-\d{3,}"
     r"|[A-Z]{2,6}-\d{4,}"
     r"|[A-Z]{2,6}\d{2,4}-\d{3,}"
     r"|[A-Z]{2,5}\d{5,}"
     r")$"
 )
 _EMBEDDED_MRN_RE = re.compile(
-    r"(?!LAB-|ORD-|BL/|OPD/|LOINC|ICD)(?:"
+    r"(?<![A-Za-z0-9])(?!LAB-|ORD-|BL/|OPD/|LOINC|ICD|bl/|opd/|mg/|ml/|iu/|mcg/|http)(?:"
     r"[A-Z]{2,6}(?:/[A-Z]{1,6})?/\d{2,4}/\d{3,}"
+    r"|[A-Za-z]{2,6}/[A-Za-z]{1,6}/\d{2,4}[-/]\d{3,}"
+    r"|[A-Za-z]{2,6}(?:\.[A-Za-z0-9]{1,6}){0,2}\.\d{2,4}\.\d{3,}"
     r"|[A-Z]{2,6}:[A-Z0-9]{2,8}:[A-Z0-9]{1,8}:\d{3,}"
     r"|[A-Z]{2,6}_[A-Z0-9]{2,8}_\d{2,4}_\d{3,}"
-    r"|[A-Z]{2,6}-[A-Z0-9]{1,5}-\d{3,}"
+    r"|[A-Z]{2,6}(?:-[A-Z0-9]{1,6}){1,2}-\d{3,}"
     r"|[A-Z]{2,6}-\d{4,}"
     r"|[A-Z]{2,6}\d{2,4}-\d{3,}"
     r"|[A-Z]{2,5}\d{5,}"
-    r")"
+    r")(?![A-Za-z0-9])"
 )
 _RE_PIN = re.compile(r"^[1-8]\d{5}$")
+_MON_PAT_STRUCT = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
 _RE_DATE = re.compile(
-    r"^(?:(\d{4})[-/](\d{1,2})[-/](\d{1,2})|(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}))$"
+    rf"^(?:(\d{{4}})[-/](\d{{1,2}})[-/](\d{{1,2}})|(\d{{1,2}})[-/.](\d{{1,2}})[-/.](\d{{4}})|(\d{{1,2}})[\s.\-]+{_MON_PAT_STRUCT}[\s,.\-]+(\d{{4}})|{_MON_PAT_STRUCT}\s+(\d{{1,2}}),?\s+(\d{{4}}))$",
+    re.I,
 )
 _RE_REL_PREFIX = re.compile(r"^(?:[SDWC]/[Oo]|[SDWC]\s*/\s*[Oo])\s+(.+)$")
 _RE_ICD_OR_CODE = re.compile(r"^[A-TV-Z]\d{2}(?:\.\d{1,2})?$")
@@ -68,7 +84,7 @@ _RE_HOUSE_VAL = re.compile(
     r"(?i)^(?:h\.?\s*no\.?|house(?:\s+no\.?)?|makan(?:\s+no\.?)?|qtr\.?|quarter|flat(?:\s+no\.?)?|plot(?:\s+no\.?)?|door(?:\s+no\.?)?)[\s.\-#:/]*[A-Za-z0-9/-]*\d[A-Za-z0-9/-]*$"
 )
 _RE_LOCALITY_VAL = re.compile(
-    rf"(?i)^(?:ward\s*(?:no\.?)?\s*\d+|sector\s*[-#]?\s*[A-Za-z0-9]+(?:\s+(?:colony|phase|extension|block))?|phase\s*[-#]?\s*\d+|mohalla\s+.+|[{_LU}][{_LL}0-9\s\-]{{2,35}}\s+(?:colony|nagar|vihar|enclave|puram|extension|basti|tola|layout|chowk|bazaar|bazar|mandi|ganj|bagh|sarai|chauraha|pura|marg|lane|market)|[{_DL}]+(?:\s+[{_DL}]+){{0,2}}\s+(?:मोहल्ला|टोला|बस्ती|कॉलोनी|नगर|विहार|बाज़ार|बाजार|मंडी|चौक|गली|गंज|बाग़|बाग|मार्ग))$"
+    rf"(?i)^(?:ward\s*(?:no\.?)?\s*\d+|sector\s*[-#]?\s*[A-Za-z0-9]+(?:\s+(?:colony|phase|extension|block))?|phase\s*[-#]?\s*\d+|mohalla\s+.+|[{_LU}][{_LL}0-9\s\-]{{2,35}}\s+(?:colony|nagar|vihar|enclave|puram|extension|basti|tola|layout|chowk|bazaar|bazar|mandi|ganj|bagh|sarai|chauraha|pura|marg|lane|market|peth|para|palli|galli|chawl|camp|naka)(?:\s+\d{{1,4}})?|[{_DL}]+(?:\s+[{_DL}]+){{0,2}}\s+(?:मोहल्ला|टोला|बस्ती|कॉलोनी|नगर|विहार|बाज़ार|बाजार|मंडी|चौक|गली|गंज|बाग़|बाग|मार्ग|पेठ|पारा|चावल|कैंप|लेन|नाका)(?:\s+[\d०-९]{{1,4}})?)$"
 )
 _RE_LANDMARK_VAL = re.compile(r"(?i)^(?:near|opp\.?|opposite|behind|beside)\s+.+")
 _SYNTH_CANARY_KEY_RE = re.compile(r"^[A-Z][a-z]{4,20}\d{1,2}[a-z]{0,4}$")
@@ -123,6 +139,7 @@ def _norm_key(k: str) -> str:
     return k
 
 
+@functools.lru_cache(maxsize=4096)
 def split_key_parts(k: str) -> tuple[str, ...]:
     """Split header/JSON key into lowercase morphological parts (handles camelCase, Unicode, delimiters)."""
     s = unicodedata.normalize("NFKC", k).strip()
@@ -137,7 +154,7 @@ def _extract_year(s: str) -> int | None:
     m = _RE_DATE.match(_norm_digits(s))
     if not m:
         return None
-    return int(m.group(1) or m.group(6))
+    return int(m.group(1) or m.group(6) or m.group(8) or m.group(10))
 
 
 _PROSE_OR_CLINICAL_STOPWORDS = _CLINICAL_OR_NON_NAME_WORDS | {
@@ -215,21 +232,21 @@ def _looks_like_address_composite(val: str) -> bool:
 
 # --------------------------------------------------------------------------- composite address scrubber (LANDMARK before LOCALITY)
 _ADDR_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("RELATIVE_NAME", re.compile(rf"(?i)(?<=C/O\s)([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+[{_LU}{_DL}][{_LL}{_DL}.'\-]+){{0,3}})(?=,|$)")),
+    ("RELATIVE_NAME", re.compile(rf"(?i)(?<=C/O\s)([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+[{_LU}{_DL}][{_LL}{_DL}.'\-]+){{0,3}})(?=,|;|$)")),
     ("HOUSE", re.compile(r"(?i)\b(?:H\.?\s*No\.?|House(?:\s+No\.?)?|Makan\s+No\.?|Qtr\.?|Quarter|Flat(?:\s+No\.?)?|Plot(?:\s+No\.?)?|Door(?:\s+No\.?)?)[\s.\-#:/]*[\dA-Za-z/-]*\d[\dA-Za-z/-]*")),
     ("HOUSE", re.compile(r"मकान\s*(?:नं\.?|सं\.?)\s*[\d०-९A-Za-z/-]+")),
-    ("LANDMARK", re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind|beside)\s+[^,\n]+")),
-    ("LANDMARK", re.compile(r"[^,\n]+\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
+    ("LANDMARK", re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind|beside)\s+[^,\n;]+")),
+    ("LANDMARK", re.compile(r"[^,\n;]+?\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
     ("LOCALITY", re.compile(r"(?i)\bWard\s*(?:No\.?)?\s*\d+")),
     ("LOCALITY", re.compile(r"वार्ड\s*(?:नं\.?)?\s*[\d०-९]+")),
     ("LOCALITY", re.compile(r"(?i)\bSector\s*[-#]?\s*[A-Za-z0-9]+(?:\s+(?:Colony|Phase|Extension|Enclave|Block))?")),
-    ("LOCALITY", re.compile(r"(?i)\bMohalla\s+[^,\n]+")),
-    ("LOCALITY", re.compile(rf"\b[{_LU}][{_LL}0-9]*(?:\s+[{_LU}0-9][{_LL}0-9]*){{0,2}}\s+(?:Colony|Nagar|Vihar|Enclave|Puram|Extension|Basti|Tola|Layout|Chowk|Bazaar|Bazar|Mandi|Ganj|Bagh|Sarai|Chauraha|Pura|Marg|Lane|Market|Phase|Block)\b")),
-    ("LOCALITY", re.compile(r"मोहल्ला\s+[^,\n]+")),
-    ("LOCALITY", re.compile(rf"[{_DL}]+(?:\s+[{_DL}]+){{0,2}}\s+(?:मोहल्ला|टोला|बस्ती|कॉलोनी|नगर|विहार|बाज़ार|बाजार|मंडी|चौक|गली|गंज|बाग़|बाग|मार्ग)(?=\s*[,;\.\-\n\r]|$)")),
-    ("VILLAGE", re.compile(r"(?i)\b(?:Vill\.?|Village|Gram)\s+[^,\n\-]+")),
-    ("VILLAGE", re.compile(r"ग्राम\s+[^,\n\-]+")),
-    ("VILLAGE", re.compile(rf"(?i)(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Qtr|Quarter|Flat|Plot|Ward|Sector|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([{_LU}{_DL}][^\n,]+?)(?=,\s*(?:Tehsil|तहसील)\b)")),
+    ("LOCALITY", re.compile(r"(?i)\bMohalla\s+[^,\n;]+")),
+    ("LOCALITY", re.compile(rf"\b[{_LU}][{_LL}0-9]*(?:\s+[{_LU}0-9][{_LL}0-9]*){{0,2}}\s+(?:Colony|Nagar|Vihar|Enclave|Puram|Extension|Basti|Tola|Layout|Chowk|Bazaar|Bazar|Mandi|Ganj|Bagh|Sarai|Chauraha|Pura|Marg|Lane|Market|Phase|Block|Peth|Para|Palli|Galli|Chawl|Camp|Naka)(?:\s+\d{{1,4}})?\b")),
+    ("LOCALITY", re.compile(r"मोहल्ला\s+[^,\n;]+")),
+    ("LOCALITY", re.compile(rf"[{_DL}]+(?:\s+[{_DL}]+){{0,2}}\s+(?:मोहल्ला|टोला|बस्ती|कॉलोनी|नगर|विहार|बाज़ार|बाजार|मंडी|चौक|गली|गंज|बाग़|बाग|मार्ग|पेठ|पारा|चावल|कैंप|लेन|नाका)(?:\s+[\d०-९]{{1,4}})?(?=\s*[,;\.\-\n\r]|$)")),
+    ("VILLAGE", re.compile(r"(?i)\b(?:Vill\.?|Village|Gram)\s+[^,\n;\-]+")),
+    ("VILLAGE", re.compile(r"ग्राम\s+[^,\n;\-]+")),
+    ("VILLAGE", re.compile(rf"(?i)(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Qtr|Quarter|Flat|Plot|Ward|Sector|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([{_LU}{_DL}][^\n,;]+?)(?=,\s*(?:Tehsil|तहसील)\b)")),
     ("PIN", re.compile(r"(?<!\d)[1-8]\d{5}(?!\d)")),
 ]
 
@@ -258,7 +275,7 @@ _PATIENT_SUBJ_PARTS = {
 _REL_SUBJ_PARTS = {
     "rel", "relative", "guardian", "caretaker", "attendant", "nok", "kin", "father",
     "mother", "husband", "wife", "spouse", "son", "daughter", "parent", "witnessed",
-    "pita", "pati", "mata", "अभिभावक", "पिता", "पति", "माता", "संरक्षक",
+    "pita", "pati", "mata", "sambandhi", "संबंधी", "अभिभावक", "पिता", "पति", "माता", "संरक्षक",
 }
 _CLINICIAN_PARTS = {
     "dr", "doc", "doctor", "consultant", "prescriber", "practitioner", "physician",
@@ -275,8 +292,8 @@ _NAME_PROP_PARTS = {
 _FIRST_NAME_PARTS = {"first", "given", "fore", "fname"}
 _LAST_NAME_PARTS = {"last", "sur", "family", "sname", "lname"}
 _ID_PROP_PARTS = {
-    "id", "uid", "uhid", "mrn", "ref", "code", "num", "no", "reg", "ipd", "opd",
-    "adm", "enroll", "enrol", "record", "panchikaran", "पंजीकरण",
+    "id", "uid", "uhid", "mrn", "mrno", "ref", "code", "num", "no", "reg", "ipd", "opd",
+    "adm", "enroll", "enrol", "record", "panchikaran", "panjikaran", "kramank", "क्रमांक", "पंजीकरण",
 }
 _NON_PATIENT_ID_EXCLUDE = {
     "package", "icd", "loinc", "sex", "gender", "test", "drug", "bill", "sample",
@@ -296,10 +313,10 @@ _DATE_PROP_PARTS = {
     "registered", "admission", "discharge", "adm", "dis", "exported", "generated",
     "recorded", "authored", "performed", "effective", "lastupdated", "timestamp", "भर्ती", "छुट्टी",
 }
-_DOB_PROP_PARTS = {"dob", "birth", "bdate", "janm", "janam", "जन्म"}
+_DOB_PROP_PARTS = {"dob", "birth", "bdate", "born", "janm", "janam", "जन्म"}
 _PHONE_PARTS = {
-    "mobile", "mob", "phone", "ph", "phn", "tel", "cell", "contact", "contct",
-    "whatsapp", "callback", "sampark", "दूरभाष", "संपर्क", "फ़ोन", "फोन", "मोबाइल",
+    "mobile", "mob", "phone", "ph", "phn", "tel", "tele", "cell", "contact", "contct",
+    "whatsapp", "callback", "sampark", "dooraabhash", "doorbhash", "doordhwani", "दूरभाष", "संपर्क", "फ़ोन", "फोन", "मोबाइल",
 }
 _PII_STRUCT_LABELS = {
     "PATIENT_NAME", "RELATIVE_NAME", "NAME_FIRST", "NAME_LAST", "NAME_LOCAL",
@@ -309,6 +326,7 @@ _PII_STRUCT_LABELS = {
 }
 
 
+@functools.lru_cache(maxsize=4096)
 def classify_header_parts(header_raw: str, parent_key: str = "") -> str | None:
     """Infer column/key semantic category compositionally from header parts + parent key (no unseen-literal rules)."""
     k = _norm_key(header_raw)
@@ -352,7 +370,7 @@ def classify_header_parts(header_raw: str, parent_key: str = "") -> str | None:
         return "EMAIL"
     if "pan" in pset or "pancard" in k or k.startswith("pan_") or k.endswith("_pan"):
         return "PAN"
-    if any(w in k for w in ("pmjay", "policy", "insurance", "ins_id", "bima")):
+    if any(w in k for w in ("pmjay", "policy", "insurance", "ins_id", "bima")) or ("insured" in pset and bool(pset & (_ID_PROP_PARTS | {"policy", "card", "num"}))):
         return "INSURANCE_ID"
     if pset & _PHONE_PARTS:
         return "PHONE"
@@ -361,20 +379,20 @@ def classify_header_parts(header_raw: str, parent_key: str = "") -> str | None:
     if pset & _DOB_PROP_PARTS:
         return "DOB"
 
-    # Age & Gender (age_at_visit, umar, sex_code, age_sex)
-    if (pset & {"age", "umar", "आयु", "उम्र"}) and (pset & {"sex", "gender", "ling", "लिंग"}):
+    # Age & Gender (age_at_visit, aayu, umar, sex_code, age_sex)
+    if (pset & {"age", "umar", "aayu", "ayu", "आयु", "उम्र"}) and (pset & {"sex", "gender", "ling", "लिंग"}):
         return "AGE_SEX"
-    if (pset & {"age", "umar", "आयु", "उम्र"}) and not (pset & {"package", "stage"}):
+    if (pset & {"age", "umar", "aayu", "ayu", "आयु", "उम्र"}) and not (pset & {"package", "stage"}):
         return "AGE"
     if (pset & {"sex", "gender", "ling", "लिंग"}) and not (pset & {"relation"}):
         return "GENDER"
 
     # Geographical & Address parts
-    if pset & {"pin", "pincode", "zip", "zipcode", "postal", "postalcode", "dak", "पिन"}:
+    if pset & {"pin", "pincode", "zip", "zipcode", "postal", "postalcode", "postcode", "dak", "पिन"}:
         return "PIN"
-    if pset & {"dist", "distt", "district", "jila", "जिला"}:
+    if pset & {"dist", "distt", "district", "jila", "zila", "zilla", "जिला"}:
         return "DISTRICT"
-    if pset & {"tehsil", "taluka", "तहसील"}:
+    if pset & {"tehsil", "taluka", "taluk", "tal", "तहसील"}:
         return "TEHSIL"
     if pset & {"landmark"}:
         return "LANDMARK"
@@ -384,7 +402,7 @@ def classify_header_parts(header_raw: str, parent_key: str = "") -> str | None:
         return "LOCALITY"
     if pset & {"vill", "village", "gram", "gaon", "native", "ग्राम"}:
         return "VILLAGE"
-    if pset & {"addr", "address", "pata", "niwas", "residence", "residential", "street", "निवास", "पता"} or (
+    if pset & {"addr", "address", "pata", "niwas", "nivas", "sthan", "wadi", "abode", "residence", "residential", "street", "निवास", "पता"} or (
         "line" in pset and "address" in pparts
     ):
         return "ADDRESS"
@@ -392,11 +410,15 @@ def classify_header_parts(header_raw: str, parent_key: str = "") -> str | None:
         return "VILLAGE"
 
     # Patient IDs vs Clinical Codes
-    if pset & {"uhid", "mrn", "panchikaran", "पंजीकरण"}:
+    if pset & {"uhid", "mrn", "mrno", "panjikaran", "panchikaran", "पंजीकरण"} or (
+        pset & {"kramank", "क्रमांक"} and pset & {"panjikaran", "panchikaran", "rogi", "mariz", "patient", "reg", "पंजीकरण"}
+    ):
         return "MRN"
     if (pset & _ID_PROP_PARTS) and not (pset & _NON_PATIENT_ID_EXCLUDE) and not (pset & _FACILITY_PARTS):
-        if pset & _PATIENT_SUBJ_PARTS or k in ("reg_no", "regno", "adm_no", "ipd_no", "ipd"):
+        if (pset & _PATIENT_SUBJ_PARTS) or (pparts & _PATIENT_SUBJ_PARTS) or k in ("reg_no", "regno", "adm_no", "ipd_no", "ipd", "uid", "mrno", "panjikaran_kramank"):
             return "MRN"
+    if k in ("hosp_no", "hosp_id", "hospital_no", "hosp_ref", "hospital_mrn", "hospital_uhid"):
+        return None
 
     # Clinical / facility tokens (avoid matching dx_text, rx_text, bed_count, cases, etc. as PII)
     if (pset & _FACILITY_PARTS) and not (pset & _PATIENT_SUBJ_PARTS):
@@ -431,13 +453,13 @@ def classify_header_parts(header_raw: str, parent_key: str = "") -> str | None:
     if "local" in pset and (pparts & {"name", "patient", "pt", "naam"} or not pparts):
         return "NAME_LOCAL"
 
-    # Full Patient Names (patient_name, pt_full, full_pt_name, रोगी_नाम, name)
+    # Full Patient Names (patient_name, pt_full, full_pt_name, रोगी_नाम, pt -> nm, name)
     if (pset & _PATIENT_SUBJ_PARTS) and (pset & _NAME_PROP_PARTS or len(pset) == 1):
         return "PATIENT_NAME"
-    if pset & {"name", "naam", "नाम"}:
+    if pset & {"name", "nm", "naam", "नाम"}:
         if is_rel_parent:
             return "RELATIVE_NAME"
-        if not pparts or (pparts & (_PATIENT_SUBJ_PARTS | {"name", "raised", "meta", "roster", "patients", "records", "visits"})):
+        if not pparts or (pparts & (_PATIENT_SUBJ_PARTS | {"name", "raised", "meta", "roster", "patients", "records", "visits", "data", "entry"})):
             return "PATIENT_NAME"
     if "full" in pset and (pset & _PATIENT_SUBJ_PARTS):
         return "PATIENT_NAME"
@@ -556,7 +578,7 @@ def infer_column_type(values: list[Any], header: str = "", parent_key: str = "")
             counts["AADHAAR_MASKED"] = counts.get("AADHAAR_MASKED", 0) + 1
         elif _RE_AADHAAR.match(s):
             counts["AADHAAR"] = counts.get("AADHAAR", 0) + 1
-        elif _RE_PHONE.match(s) or _RE_PHONE_MASKED.match(s):
+        elif _RE_PHONE.match(s) or _RE_PHONE_MASKED.match(s) or re.fullmatch(r"[6-9](?:\.\d+)?[eE]\+?0*9", s):
             counts["PHONE"] = counts.get("PHONE", 0) + 1
         elif _RE_INSURANCE.match(s):
             counts["INSURANCE_ID"] = counts.get("INSURANCE_ID", 0) + 1
@@ -575,10 +597,10 @@ def infer_column_type(values: list[Any], header: str = "", parent_key: str = "")
             counts["LOCALITY"] = counts.get("LOCALITY", 0) + 1
         elif _RE_LANDMARK_VAL.match(s):
             counts["LANDMARK"] = counts.get("LANDMARK", 0) + 1
+        elif _RE_REL_PREFIX.match(s) and not re.search(r"(?i)(?:h\.?\s*no|house|makan|tehsil|distt|flat|plot|mohalla|colony|ward|sector|vill\.?|gram\s|[1-8]\d{5}|मकान|तहसील|जिला|वार्ड|मोहल्ला|ग्राम)", s):
+            counts["RELATIVE_NAME"] = counts.get("RELATIVE_NAME", 0) + 1
         elif _looks_like_address_composite(s):
             counts["ADDRESS"] = counts.get("ADDRESS", 0) + 1
-        elif _RE_REL_PREFIX.match(s):
-            counts["RELATIVE_NAME"] = counts.get("RELATIVE_NAME", 0) + 1
         elif not int_only and _looks_like_person_name(s):
             counts["NAME_LIKE"] = counts.get("NAME_LIKE", 0) + 1
 
@@ -663,12 +685,16 @@ def infer_table_schema(header: list[str], body: list[list[str]], parent_key: str
         elif ct is None and any(v and _RE_DATE.match(_norm_digits(str(v))) for v in col_vals_all[c_idx][:10]):
             schema.date_cols.append(c_idx)
 
-    # Neighbor check for AGE_SEX/AGE values even under unknown headers (e.g. "34/M", "45 वर्ष")
+    # Neighbor check for AGE_SEX/AGE values and short "G" (Gender) column when values are strictly sex codes
     for c_idx in range(n_cols):
-        if c_idx in schema.age_cols or c_idx in schema.age_sex_cols or col_types[c_idx] is not None:
+        if c_idx in schema.age_cols or c_idx in schema.age_sex_cols or c_idx in schema.sex_cols or col_types[c_idx] is not None:
             continue
         non_empty = [str(v).strip() for v in col_vals_all[c_idx] if v is not None and str(v).strip()]
         if non_empty:
+            if _norm_key(header[c_idx]) in ("g", "sx") and all(v.casefold() in ("m", "f", "o", "male", "female", "other", "पुरुष", "महिला", "अन्य") for v in non_empty):
+                schema.sex_cols.append(c_idx)
+                schema.part_hints[c_idx] = "GENDER"
+                continue
             as_hits = sum(1 for v in non_empty if re.fullmatch(r"\d{1,3}\s*/\s*[MF]", v, re.I))
             if as_hits >= max(1, int(0.6 * len(non_empty))):
                 schema.age_sex_cols.append(c_idx)
@@ -864,9 +890,9 @@ def is_non_patient_json_content(data: Any) -> bool:
 
 
 _GENERIC_PATH_SEGMENTS = {
-    "exports", "export", "his", "data", "opd", "ipd", "registration", "lab", "billing",
-    "discharge", "notes", "records", "reports", "patients", "attachments", "clean",
-    "backup", "archive", "temp", "tmp", "files", "input", "output",
+    "exports", "export", "his", "hmis", "emr", "ehr", "db", "raw", "inbox", "outbox", "data",
+    "opd", "ipd", "registration", "lab", "billing", "discharge", "notes", "records", "reports",
+    "patients", "attachments", "clean", "backup", "archive", "temp", "tmp", "files", "input", "output",
 }
 
 
@@ -941,11 +967,18 @@ def redact_structured_value(val: Any, col_type: str, stats: dict[str, int] | Non
         return out
 
     if col_type == "RELATIVE_NAME":
-        m = _RE_REL_PREFIX.match(s.strip())
+        st = s.strip()
+        m = _RE_REL_PREFIX.match(st)
         if m:
-            prefix = s.strip()[: m.start(1)]
+            prefix = st[: m.start(1)]
+            rest = m.group(1)
             if stats is not None:
                 stats["RELATIVE_NAME"] = stats.get("RELATIVE_NAME", 0) + 1
+            m_pan = re.search(r"\(\s*PAN\s*:\s*[A-Z]{5}\d{4}[A-Z]\s*\)", rest, re.I)
+            if m_pan:
+                if stats is not None:
+                    stats["PAN"] = stats.get("PAN", 0) + 1
+                return f"{prefix}[RELATIVE_NAME] (PAN: [PAN])"
             return f"{prefix}[RELATIVE_NAME]"
         if stats is not None:
             stats["RELATIVE_NAME"] = stats.get("RELATIVE_NAME", 0) + 1
@@ -987,16 +1020,43 @@ def _classify_scalar_by_value_and_key(val: Any, key: str, parent_key: str) -> st
         return hint if hint in ("AADHAAR", "ABHA_NUMBER", "PHONE", "PIN", "MRN") else None
 
     if isinstance(val, float):
+        import math
+
+        if math.isfinite(val) and val == math.floor(val):
+            ival = int(val)
+            if 100_000_000_000 <= ival <= 999_999_999_999:
+                return "AADHAAR"
+            if 10_000_000_000_000 <= ival <= 99_999_999_999_999:
+                return "ABHA_NUMBER"
+            if 6_000_000_000 <= ival <= 9_999_999_999:
+                return "PHONE"
+            if hint == "PIN" and 100_000 <= ival <= 899_999:
+                return "PIN"
         return None
 
     if not isinstance(val, str) or not val.strip():
         return None
+    if len(val) > 600:
+        return hint if hint in ("FREE_TEXT", "ADDRESS") else None
 
     ns = _norm_digits(val)
-    # Catch filesystem path strings inside metadata/source keys even under unfamiliar key names
-    if (
-        (re.match(r"^[A-Za-z]:\\", ns) or ns.startswith(("/tmp/", "/var/", "/home/", "/mnt/", "/data/")))
-        and ("meta" in parent_key.casefold() or set(split_key_parts(key)) & {"source", "file", "path", "dir", "export"})
+    # Scientific-notation phone/ID string (e.g. "9.87654321e+09")
+    if re.fullmatch(r"[1-9](?:\.\d+)?[eE]\+?0*(?:9|11|13)", ns):
+        try:
+            fval = float(ns)
+            ival = int(round(fval))
+            if 6_000_000_000 <= ival <= 9_999_999_999:
+                return "PHONE"
+            if 100_000_000_000 <= ival <= 999_999_999_999:
+                return "AADHAAR"
+            if 10_000_000_000_000 <= ival <= 99_999_999_999_999:
+                return "ABHA_NUMBER"
+        except (ValueError, OverflowError):
+            pass
+    # Catch filesystem path strings inside metadata/source keys (or explicit drive/Unix roots anywhere)
+    if re.match(r"^[A-Za-z]:\\", ns) or (
+        ns.startswith(("/tmp/", "/var/", "/home/", "/mnt/", "/data/"))
+        and ("meta" in parent_key.casefold() or bool(set(split_key_parts(key)) & {"source", "src", "file", "path", "dir", "export"}))
     ):
         return "META_PATH"
     if _RE_ABHA_ADDR.match(ns):
@@ -1034,11 +1094,13 @@ def _classify_scalar_by_value_and_key(val: Any, key: str, parent_key: str) -> st
     if _RE_LOCALITY_VAL.match(ns):
         return "LOCALITY"
 
-    # Envelope / operator / account fields holding a person name (e.g. operator_account) -> scrub
+    # Envelope / operator / account / short 'n' patient-name fields -> scrub
     key_parts = set(split_key_parts(key))
     if (key_parts & {"operator", "account", "verifier", "uploader", "reviewer", "entered"}) and not ns.startswith(("Dr.", "Dr ", "डॉ")):
         if _looks_like_person_name(ns, allow_synthetic_canary=True):
             return "PATIENT_NAME"
+    if _norm_key(key) == "n" and len(ns.split()) >= 2 and not ns.startswith(("Dr.", "Dr ", "डॉ")) and _looks_like_person_name(ns, allow_synthetic_canary=True):
+        return "PATIENT_NAME"
 
     return hint
 

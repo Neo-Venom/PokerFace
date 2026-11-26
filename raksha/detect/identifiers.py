@@ -27,8 +27,9 @@ _CLINICAL_TERM_BEFORE_RE = re.compile(
     r"(?:platelet(?:\s+count)?|wbc(?:\s+count)?|rbc|hb|haemoglobin|hemoglobin|hba1c|rbs|blood\s+sugar|"
     r"creatinine|sodium|potassium|tsh|loinc|bp|pulse|temp(?:erature)?|spo2|weight|"
     r"dose|dosage|ref(?:erence)?\s*range|range|amount|rs\.?|inr|₹|"
+    r"batch(?:\s*(?:no|num|number)\.?)?|lot(?:\s*(?:no|num|number)\.?)?|serial(?:\s*(?:no|num|number)\.?)?|"
     r"tab\.?|cap\.?|inj\.?|syr\.?|inh\.?|sachet|paracetamol|dolo|metformin|atorvastatin|"
-    r"azithromycin|ceftriaxone|amlodipine|telmisartan|ramipril|artesunate|pantoprazole)\s*[:=\-]?\s*$",
+    r"azithromycin|ceftriaxone|amlodipine|telmisartan|ramipril|artesunate|pantoprazole)\s*[:.#=\-]?\s*$",
     re.I,
 )
 _PII_NUM_BEFORE_RE = re.compile(
@@ -71,16 +72,19 @@ def is_clinical_numeric_context(text: str, start: int, end: int, kind: str) -> b
 
 # --------------------------------------------------------------------------- core identifier patterns
 _PHONE_PATTERNS = [
-    # +91 / 0 + 10 digits with spaces/dashes/dots + optional extension
-    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|0)?[6-9]\d{4}[\s.\-]?\d{5}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
-    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|0)?[6-9]\d{2}[\s.\-]?\d{3}[\s.\-]?\d{4}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
-    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|0)?[6-9]\d[\s.\-]?\d{4}[\s.\-]?\d{4}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
+    # Parenthesized STD / area code landline or toll number, e.g. (771) 563-2698, (022) 2412-3456
+    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?\(\s*0?[1-9]\d{1,4}\s*\)[\s.\-]?\d{3,4}[\s.\-]?\d{4}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
+    # +91 / 0091 / 0 + 10 digits in 5-5, 3-3-4, 4-6 / 4-3-3, or 2-4-4 groupings + optional extension
+    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?[6-9]\d{4}[\s.\-]?\d{5}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
+    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?[6-9]\d{2}[\s.\-]?\d{3}[\s.\-]?\d{4}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
+    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?[6-9]\d{3}[\s.\-]?\d{3}[\s.\-]?\d{3}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
+    re.compile(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?|00[\s.\-]?91[\s.\-]?|0)?[6-9]\d[\s.\-]?\d{4}[\s.\-]?\d{4}(?:\s*(?:ext\.?|extension|x)\s*\d{2,5})?(?!\d)", re.I),
     # Masked phone like 98XXXXXX10
     re.compile(r"(?<![\dA-Za-z])[6-9]\d[xX*]{4,6}\d{2,4}(?![\dA-Za-z])"),
 ]
-# Phone trigger for landlines or short/non-[6-9] local extensions when explicitly labeled
+# Phone trigger for landlines or short/non-[6-9] local numbers when explicitly labeled
 _LABELED_PHONE_RE = re.compile(
-    r"(?i)\b(?:mob|mobile|phone|ph|tel|contact|whatsapp|callback|मोबाइल|फ़ोन|फोन)\s*[:.#\-]\s*(\+?[\d][\d\s.\-]{7,16}\d(?:\s*(?:ext\.?|x)\s*\d{2,5})?)"
+    r"(?i)(?:\bmob(?:ile)?|\bphone|\bph|\btel|\bcontact|\bwhatsapp|\bcallback|\blandline|\bfax|मोबाइल|फ़ोन|फोन|संपर्क|दूरभाष)\s*(?:no\.?\s*)?[:.#=\-]\s*(\+?[\d(][\d\s.\-()]{7,18}\d(?:\s*(?:ext\.?|x)\s*\d{2,5})?)"
 )
 
 _ABHA_NUM_RE = re.compile(r"(?<!\d)\d{2}[\s\-]\d{4}[\s\-]\d{4}[\s\-]\d{4}(?!\d)|(?<!\d)\d{14}(?!\d)")
@@ -94,20 +98,24 @@ _INSURANCE_PATTERNS = [
     re.compile(r"\bPOL/\d{2,4}/\d{4,}\b", re.I),
 ]
 _MRN_PATTERNS = [
-    re.compile(r"\b[A-Z]{2,6}(?:/[A-Z]{1,6})?/\d{2,4}/\d{3,}\b"),  # e.g. HOSP/26/001234, NVJ/OP/25/722967
-    re.compile(r"\b[A-Z]{2,6}:[A-Z0-9]{2,8}:[A-Z0-9]{1,8}:\d{3,}\b"),  # e.g. KLS:UHID:25:18763
-    re.compile(r"\b[A-Z]{2,6}_[A-Z0-9]{2,8}_\d{2,4}_\d{3,}\b"),       # e.g. PGC_REG_25_851282
-    re.compile(r"\b[A-Z]{2,6}-[A-Z0-9]{1,5}-\d{3,}\b"),             # e.g. RGH-B25-639176, HOSP-IPD-00123
-    re.compile(r"\b[A-Z]{2,6}-\d{4,}\b"),                           # e.g. HOSP-0012345, ZQ-901827
-    re.compile(r"\b[A-Z]{2,6}\d{2,4}-\d{3,}\b"),                      # e.g. HOSP2026-001234, NVP27-110421
-    re.compile(r"\b[A-Z]{2,5}\d{5,}\b"),                            # e.g. ADM000123
+    re.compile(r"(?<![A-Za-z0-9])(?!BL/|OPD/|LOINC|ICD)[A-Z]{2,6}(?:/[A-Z]{1,6})?/\d{2,4}/\d{3,}(?![A-Za-z0-9])"),  # e.g. HOSP/26/001234, NVJ/OP/25/722967
+    re.compile(r"(?<![A-Za-z0-9])(?!bl/|opd/|mg/|ml/|iu/|mcg/|http)[A-Za-z]{2,6}/[A-Za-z]{1,6}/\d{2,4}[-/]\d{3,}(?![A-Za-z0-9])"),  # e.g. kvh/op/25-808961
+    re.compile(r"(?<![A-Za-z0-9])(?!LOINC|ICD)[A-Za-z]{2,6}(?:\.[A-Za-z0-9]{1,6}){0,2}\.\d{2,4}\.\d{3,}(?![A-Za-z0-9])"),  # e.g. VZC.25.824740, vzc.25.824740
+    re.compile(r"(?<![A-Za-z0-9])[A-Z]{2,6}:[A-Z0-9]{2,8}:[A-Z0-9]{1,8}:\d{3,}(?![A-Za-z0-9])"),  # e.g. KLS:UHID:25:18763
+    re.compile(r"(?<![A-Za-z0-9])[A-Z]{2,6}_[A-Z0-9]{2,8}_\d{2,4}_\d{3,}(?![A-Za-z0-9])"),       # e.g. PGC_REG_25_851282
+    re.compile(r"(?<![A-Za-z0-9])[A-Z]{2,6}(?:-[A-Z0-9]{1,6}){1,2}-\d{3,}(?![A-Za-z0-9])"),       # e.g. RGH-B25-639176, SSH-R-25-035580
+    re.compile(r"(?<![A-Za-z0-9])[A-Z]{2,6}-\d{4,}(?![A-Za-z0-9])"),                             # e.g. HOSP-0012345, ZQ-901827
+    re.compile(r"(?<![A-Za-z0-9])[A-Z]{2,6}\d{2,4}-\d{3,}(?![A-Za-z0-9])"),                        # e.g. HOSP2026-001234, NVP27-110421
+    re.compile(r"(?<![A-Za-z0-9])[A-Z]{2,5}\d{5,}(?![A-Za-z0-9])"),                              # e.g. ADM000123, BCT70192695
 ]
 _LABELED_MRN_RE = re.compile(
-    r"(?i)(?:\bUHID|\bMRN|\bReg\.?(?:\s*No\.?)?|\bIPD(?:\s*No\.?)?|\bID|पंजीकरण\s*(?:सं\.?|क्रमांक)|पंजीयन\s*(?:सं\.?|क्रमांक)|आईपीडी\s*(?:सं\.?|क्रमांक))"
-    r"\s*(?:[:#]\s*|\s+(?=[A-Z]{2,}[-/:_0-9]))([A-Z0-9][A-Z0-9/:_\-]{4,28})"
+    r"(?i)(?:\bUHID|\bMRN|\bReg\.?(?:\s*No\.?)?|\bIPD(?:\s*No\.?)?|\bHosp\.?(?:\s*No\.?)?|\bHospital\s*(?:ID|No\.?)|\bMR\.?\s*No\.?|\bID|पंजीकरण(?:\s*(?:सं\.?|क्रमांक))?|पंजीयन(?:\s*(?:सं\.?|क्रमांक))?|आईपीडी\s*(?:सं\.?|क्रमांक))"
+    r"\s*(?:[:#]\s*|\s+(?=[A-Za-z]{2,}[-/:_.\d]))((?=[A-Za-z0-9/:_.\-]*\d)[A-Za-z0-9][A-Za-z0-9/:_.\-]{3,27}[A-Za-z0-9])"
 )
+_MON_DOB_PAT = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
 _DOB_LINE_RE = re.compile(
-    r"(?i)(?:\bDOB|\bDate\s+of\s+Birth|\bBirth\s+Date|जन्म\s*तिथि)\s*[:\-]\s*(\d{1,4}[./\-]\d{1,2}[./\-]\d{1,4})"
+    rf"(?i)(?:(?:\bDOB|\bDate\s+of\s+Birth|\bBirth\s+Date|जन्म\s*तिथि)\s*[:\-]\s*|\bBorn(?:\s+on)?\s*[:\-]?\s*)"
+    rf"(\d{{1,4}}[./\-]\d{{1,2}}[./\-]\d{{1,4}}|\d{{1,2}}[\s.\-]+{_MON_DOB_PAT}[\s,.\-]+\d{{2,4}}|{_MON_DOB_PAT}\s+\d{{1,2}},?\s+\d{{2,4}})"
 )
 _PIN_CONTEXT_RE = re.compile(
     r"(?:-\s+|,\s+|\bPIN\s*[:\s\-]+|पिन\s*[:\s\-]+)([1-8]\d{5})(?!\d)",
@@ -127,6 +135,7 @@ def derive_id_patterns_from_values(mrn_values: list[str]) -> list[re.Pattern]:
             continue
         # Convert concrete token into a generalized shape regex: alpha runs, digit runs, separators
         parts: list[str] = []
+        multi_sep = (s.count("-") + s.count("/") + s.count("_") + s.count(".") + s.count(":")) >= 2 or any(c in "/.:" for c in s)
         i = 0
         while i < len(s):
             if s[i].isalpha() and s[i].isascii():
@@ -134,7 +143,8 @@ def derive_id_patterns_from_values(mrn_values: list[str]) -> list[re.Pattern]:
                 while j < len(s) and s[j].isalpha() and s[j].isascii():
                     j += 1
                 ln = j - i
-                parts.append(f"[A-Z]{{{max(2, ln-1)},{ln+2}}}" if s[i:j].isupper() else f"[A-Za-z]{{{ln}}}")
+                alpha_cls = "[A-Za-z]" if (multi_sep or not s[i:j].isupper()) else "[A-Z]"
+                parts.append(f"{alpha_cls}{{{max(2, ln-1)},{ln+2}}}" if s[i:j].isupper() else f"{alpha_cls}{{{ln}}}")
                 i = j
             elif s[i].isdigit():
                 j = i
@@ -143,14 +153,14 @@ def derive_id_patterns_from_values(mrn_values: list[str]) -> list[re.Pattern]:
                 ln = j - i
                 parts.append(f"\\d{{{max(2, ln-1)},{ln+2}}}" if ln >= 3 else f"\\d{{{ln}}}")
                 i = j
-            elif s[i] in "-/_":
+            elif s[i] in "-/_.:":
                 parts.append(re.escape(s[i]))
                 i += 1
             else:
                 parts = []
                 break
         if parts and any("\\d" in p for p in parts) and any("[A-Z" in p for p in parts):
-            skeletons.add(r"\b" + "".join(parts) + r"\b")
+            skeletons.add(r"(?<![A-Za-z0-9])" + "".join(parts) + r"(?![A-Za-z0-9])")
     return [re.compile(pat) for pat in sorted(skeletons)]
 
 

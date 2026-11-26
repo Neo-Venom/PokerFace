@@ -25,7 +25,9 @@ _FILENAME_ID_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9])"
     r"(?!(?:report|forward|whatsapp|nursing|discharge|summary|protocol|census|claims|results|patients|bundle|export|visits)[-_])"
     r"("
-    r"[A-Za-z]{2,6}[-_][A-Za-z0-9]{1,5}[-_]\d{3,}"
+    r"[A-Za-z]{2,6}[-_][A-Za-z0-9]{1,5}[-_][A-Za-z0-9]{1,5}[-_]\d{3,}"
+    r"|[A-Za-z]{2,6}(?:\.[A-Za-z0-9]{1,5})?\.\d{2,4}\.\d{3,}"
+    r"|[A-Za-z]{2,6}[-_][A-Za-z0-9]{1,5}[-_]\d{3,}"
     r"|[A-Za-z]{2,6}[-_][A-Za-z0-9]{2,8}[-_]\d{2,4}[-_]\d{3,}"
     r"|[A-Za-z]{2,6}[-_]\d{2,4}[-_]\d{3,}"
     r"|[A-Za-z]{2,6}\d{2,4}[-_]\d{3,}"
@@ -34,6 +36,7 @@ _FILENAME_ID_RE = re.compile(
     r"|(?:[6-9]\d{9})"
     r")(?![A-Za-z0-9])"
 )
+_UNSAFE_PATH_CHARS_RE = re.compile(r"[;`|<>$\x00-\x1f]")
 
 
 def sanitize_relative_path(
@@ -99,9 +102,18 @@ def sanitize_relative_path(
             if is_last:
                 # Append deterministic short digest to prevent collisions across renamed files
                 clean_stem = f"{clean_stem}_{input_sha256[:8]}"
-            new_parts.append(f"{clean_stem}{ext}")
+            out_seg = f"{clean_stem}{ext}"
         else:
-            new_parts.append(part)
+            out_seg = part
+
+        if _UNSAFE_PATH_CHARS_RE.search(out_seg) or re.search(r"\.\.(?:[\\/_]|$)", out_seg):
+            safe_stem = re.sub(r"\.\.", "_", stem if not merged else clean_stem)
+            safe_stem = _UNSAFE_PATH_CHARS_RE.sub("_", safe_stem).strip("._ ") or "file"
+            safe_stem = re.sub(r"_{2,}", "_", safe_stem)
+            if is_last and input_sha256[:8] not in safe_stem:
+                safe_stem = f"{safe_stem}_{input_sha256[:8]}"
+            out_seg = f"{safe_stem}{ext}"
+        new_parts.append(out_seg)
 
     out_rel = "/".join(new_parts)
     if used_paths is not None:

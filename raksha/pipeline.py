@@ -24,6 +24,7 @@ from raksha.detect.normalize import build_normalized_view
 from raksha.detect.protected import build_clinical_lexicon, resolve_pii_vs_protected
 from raksha.detect.registry import build_alias_registry
 from raksha.detect.structured import (
+    _scrub_url_query_params,
     infer_column_type,
     infer_dict_schema,
     infer_table_schema,
@@ -42,7 +43,7 @@ from raksha.identity.pseudonymizer import (
     inject_psn_text,
     issue_cluster_pseudonyms,
 )
-from raksha.ingest.loader import SUPPORTED_EXTS, decode_bytes, load_json_safe, load_tabular, sniff_format
+from raksha.ingest.loader import SUPPORTED_EXTS, decode_bytes, load_json_safe, load_tabular, sniff_csv_delimiter, sniff_format
 from raksha.privacy.dates import infer_month_first, keyed_shift_days
 from raksha.privacy.risk import PolicySettings, PrivacyPlan, assess_privacy_risks
 from raksha.privacy.transform import apply_privacy_to_json, apply_privacy_to_tabular, generalize_text
@@ -122,15 +123,27 @@ def _process_tabular(
         if plans_by_row:
             clean_body, gen_flags = apply_privacy_to_tabular(rows[0], rows[1:], clean_body, rel, plans_by_row)
 
+    def _csv_safe(cell: object) -> str:
+        s = str(cell)
+        if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+            if s[0] in ("+", "-"):
+                try:
+                    float(s)
+                    return s
+                except ValueError:
+                    pass
+            return "'" + s
+        return s
+
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=delimiter, lineterminator="\n")
-    writer.writerow(clean_header)
+    writer.writerow([_csv_safe(c) for c in clean_header])
     for i, row in enumerate(clean_body):
         loc = f"row:{i}"
         psn = record_to_psn.get((rel, loc)) if record_to_psn is not None else None
         if psn is not None:
             row = inject_psn_tabular_row(clean_header, row, psn)
-        writer.writerow(row)
+        writer.writerow([_csv_safe(c) for c in row])
         rec = {"file": f"sanitized/{out_rel}", "loc": loc, "patient": psn}
         if gen_flags.get(i):
             rec["status"] = "generalized"
@@ -207,7 +220,7 @@ def _process_json(
                 rec["status"] = "generalized"
             records.append(rec)
 
-    return json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n"
+    return json.dumps(cleaned, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
 
 
 def _process_text(
@@ -280,13 +293,15 @@ def run_pipeline(
                 raise ValueError("unsupported_format")
             text = decode_bytes(raw)
             fmt = sniff_format(path, text)
+            delim: str | None = None
             if fmt in ("csv", "tsv"):
-                payload = load_tabular(text, "\t" if fmt == "tsv" else ",")
+                delim = "\t" if fmt == "tsv" else sniff_csv_delimiter(text)
+                payload = load_tabular(text, delim)
             elif fmt == "json":
                 payload = load_json_safe(text)
             else:
                 payload = text
-            ingested.append({"rel": rel, "sha": sha, "fmt": fmt, "payload": payload, "error": None})
+            ingested.append({"rel": rel, "sha": sha, "fmt": fmt, "delim": delim, "payload": payload, "error": None})
             parsed_items.append((rel, fmt, payload))
         except (ValueError, RecursionError, UnicodeError, csv.Error) as exc:
             reason = str(exc) if isinstance(exc, ValueError) and str(exc).isidentifier() else type(exc).__name__
@@ -322,15 +337,48 @@ def run_pipeline(
 
     entity_stats: dict[str, int] = {}
 
+    def _predecode_obfuscations(raw_txt: str) -> str:
+        s = raw_txt
+        if "\u202e" in s:
+            s = re.sub(r"\u202e([^\u202c\n\r]*)\u202c?", lambda m: m.group(1)[::-1], s)
+        if any(ch in s for ch in ("\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2066", "\u2067", "\u2068", "\u2069")):
+            s = re.sub(r"[\u202a-\u202e\u2066-\u2069]", "", s)
+        if "&#" in s:
+            def _ent_repl(m: re.Match) -> str:
+                tok = m.group(1)
+                try:
+                    cp = int(tok[1:], 16) if tok[0] in ("x", "X") else int(tok)
+                    if cp < 32 or cp in (0x22, 0x26, 0x27, 0x3C, 0x3E) or cp > 0x10FFFF:
+                        return m.group(0)
+                    return chr(cp)
+                except (ValueError, OverflowError):
+                    return m.group(0)
+            s = re.sub(r"&#(x[0-9a-fA-F]{1,5}|\d{1,5});", _ent_repl, s)
+        if "\\u" in s and re.search(r"\\u[0-9a-fA-F]{4}", s):
+            def _u_repl(m: re.Match) -> str:
+                cp = int(m.group(1), 16)
+                if cp < 32 or cp in (0x22, 0x26, 0x27, 0x3C, 0x3E):
+                    return m.group(0)
+                return chr(cp)
+            s = re.sub(r"\\u([0-9a-fA-F]{4})", _u_repl, s)
+        return s
+
     def scrub_free_text(txt: str) -> str:
-        nv = build_normalized_view(txt)
-        prot = clinical_lexicon.find_spans(txt, view=nv)
-        id_spans = detect_identifier_spans(txt, extra_mrn_patterns=extra_mrn_patterns, view=nv)
-        ctx_spans = detect_context_name_and_address_spans(txt, view=nv, protected_spans=prot)
-        reg_spans = alias_registry.propose_spans(txt, view=nv)
-        crf_spans = crf_predictor.predict_spans(txt) if crf_predictor.available else []
+        pre = _predecode_obfuscations(txt)
+        if "://" in pre and "?" in pre and "=" in pre:
+            pre = re.sub(
+                r"https?://[^\s<>\"'\]\)]+",
+                lambda m: _scrub_url_query_params(m.group(0), text_scrubber=None, stats=entity_stats),
+                pre,
+            )
+        nv = build_normalized_view(pre)
+        prot = clinical_lexicon.find_spans(pre, view=nv)
+        id_spans = detect_identifier_spans(pre, extra_mrn_patterns=extra_mrn_patterns, view=nv)
+        ctx_spans = detect_context_name_and_address_spans(pre, view=nv, protected_spans=prot)
+        reg_spans = alias_registry.propose_spans(pre, view=nv)
+        crf_spans = crf_predictor.predict_spans(pre) if crf_predictor.available else []
         merged = resolve_pii_vs_protected(id_spans + ctx_spans + reg_spans + crf_spans, prot)
-        return redact_spans(txt, merged, stats=entity_stats)
+        return redact_spans(pre, merged, stats=entity_stats)
 
     # Pass 2: sanitize & write outputs
     files_report: list[dict] = []
@@ -362,7 +410,7 @@ def run_pipeline(
                 min_days=policy_cfg.date_shift_min_days,
             )
             if fmt in ("csv", "tsv"):
-                delim = "\t" if fmt == "tsv" else ","
+                delim = item.get("delim") or ("\t" if fmt == "tsv" else ",")
                 result = _process_tabular(
                     payload,
                     delim,
