@@ -48,6 +48,8 @@ def generate_candidate_pairs(evs: list[RecordEvidence]) -> list[tuple[int, int]]
                 blocks[("GSK_DIST", gsk, dist)].append(idx)
         for ssk in ev.surname_skels:
             blocks[("SSK_SEX", ssk, g_tag)].append(idx)
+            for rsk in ev.rel_skels:   # "N. Kulkarni, C/O Rajan": initial + surname + relative, gender unknown
+                blocks[("SSK_RSK", ssk, rsk)].append(idx)
             for dist in ev.districts:
                 blocks[("SSK_DIST", ssk, dist)].append(idx)
 

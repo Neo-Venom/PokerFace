@@ -18,11 +18,31 @@ _PCT_SEQ_RE = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
 _PCT_PAIR_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 
 
+_PCT_BETWEEN_LETTERS_RE = re.compile(r"[A-Za-z\u0900-\u097f]%[0-9A-Fa-f]{2}[A-Za-z\u0900-\u097f%]")
+_NUM_ENTITY_RUN_RE = re.compile(r"(?:&#(?:\d{2,7}|[xX][0-9A-Fa-f]{2,6});)+")
+
+
+def _decode_letter_entities(m: "re.Match[str]") -> str:
+    """'&#2346;&#2366;...' -> Devanagari / Latin letters; leave markup entities (&lt; &amp;) alone."""
+    raw = m.group(0)
+    out = []
+    for ent in re.findall(r"&#([xX]?[0-9A-Fa-f]+);", raw):
+        try:
+            cp = int(ent[1:], 16) if ent[:1] in ("x", "X") else int(ent)
+            ch = chr(cp)
+        except (ValueError, OverflowError):
+            return raw
+        if not (ch.isalpha() or ch.isspace() or "\u0900" <= ch <= "\u097f" or ch in ".-'"):
+            return raw
+        out.append(ch)
+    return "".join(out)
+
+
 def unquote_percent_text(text: str) -> str:
-    """Decode multi-byte %XX percent-encoded text using pure stdlib byte hex parsing."""
-    if "%" not in text or len(_PCT_PAIR_RE.findall(text)) < 2:
+    """Decode %XX percent-encoding (also single %20 between name parts, also inside URLs)."""
+    if "%" not in text:
         return text
-    if text.lstrip().lower().startswith(("http://", "https://", "urn:")):
+    if len(_PCT_PAIR_RE.findall(text)) < 2 and not _PCT_BETWEEN_LETTERS_RE.search(text):
         return text
     return _PCT_SEQ_RE.sub(
         lambda m: bytes.fromhex(m.group(0).replace("%", "")).decode("utf-8", errors="replace"),
@@ -55,10 +75,12 @@ GENERIC_WEAK_TOKENS = {
 
 
 def deobfuscate_unicode(text: str) -> str:
-    """Resolve BiDi RLO overrides, strip zero-width evasion controls, and normalize to NFC."""
+    """Resolve BiDi RLO overrides, numeric letter entities, zero-width evasion controls; normalize to NFC."""
     if not text:
         return text
     s = text
+    if "&#" in s:
+        s = _NUM_ENTITY_RUN_RE.sub(_decode_letter_entities, s)
     if "\u202e" in s:
         s = _BIDI_RLO_RE.sub(lambda m: m.group(1)[::-1], s)
     if any(ord(c) >= 0x200B for c in s):

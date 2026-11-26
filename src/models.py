@@ -75,3 +75,5 @@ class FileEntry:
     has_pii_filename: bool = False
     is_clean_doc: bool = False
     records: list[PatientRecord] = field(default_factory=list)
+    key_roles: dict[str, str] = field(default_factory=dict)   # JSON key -> role inferred from values
+    multi_patient: bool = False                                # PII in >=2 headers/keys: a multi-patient table

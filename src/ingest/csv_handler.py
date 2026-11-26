@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from typing import Callable
 
 from src.ingest.profiler import infer_column_roles, infer_date_order
@@ -49,10 +50,12 @@ def parse_csv_entry(entry: FileEntry) -> None:
 
     header = rows[0]
     body = rows[1:]
-    roles = infer_column_roles(header, body)
-    # Repair any ragged rows that exceeded header width due to unquoted commas
+    # Profile on well-formed rows first, repair ragged rows (unquoted commas), then profile again
+    well_formed = [r for r in body if len(r) == len(header)] or body
+    roles = infer_column_roles(header, well_formed)
     if any(len(r) > len(header) for r in body):
         body = [_realign_extra_cells(r, len(header), roles) for r in body]
+        roles = infer_column_roles(header, body)
     # Infer column-level date order per date/DOB column
     date_vals: list[str] = []
     hint_str = " ".join(h for idx, h in enumerate(header) if roles.get(idx) in ("DATE", "DOB"))
@@ -79,6 +82,17 @@ def parse_csv_entry(entry: FileEntry) -> None:
         )
 
 
+# OWASP CSV-injection defence: a cell a spreadsheet would evaluate as a formula is prefixed with "'".
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+_PLAIN_NUMBER = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+
+
+def neutralize_formula(cell: str) -> str:
+    if cell and cell.startswith(_FORMULA_LEAD) and not _PLAIN_NUMBER.match(cell.strip()) and cell.strip("-+ ") != "":
+        return "'" + cell
+    return cell
+
+
 def serialize_csv_entry(
     entry: FileEntry,
     scrub_header_fn: Callable[[str], str],
@@ -87,10 +101,10 @@ def serialize_csv_entry(
     rows = entry.parsed_data or []
     if not rows:
         return ""
-    header = [scrub_header_fn(h) for h in rows[0]]
+    header = [neutralize_formula(scrub_header_fn(h)) for h in rows[0]]
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=entry.delimiter or ",", lineterminator="\n")
     writer.writerow(header)
     for idx, row in enumerate(rows[1:]):
-        writer.writerow(rewrite_row_fn(idx, row))
+        writer.writerow([neutralize_formula(c) if isinstance(c, str) else c for c in rewrite_row_fn(idx, row)])
     return buf.getvalue()

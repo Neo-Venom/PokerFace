@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from data.gazetteers import KNOWN_GEO_DISTRICTS_STATES
-from src.ingest.profiler import infer_role_from_header
+from src.ingest.profiler import infer_role_from_header, resolve_key_role
 from src.models import FileEntry, PatientRecord
 from src.nlp.indic_norm import deobfuscate_unicode, name_tokens, normalize_name_token, phonetic_skeleton, shadow_normalize
 from src.nlp.medical_guard import MedicalGuard
@@ -19,7 +19,7 @@ _GENDER_F_RE = re.compile(r"(?i)\b(?:f|female|महिला)\b|/\s*f\b|\b(?:w/
 _GENDER_M_RE = re.compile(r"(?i)\b(?:m|male|पुरुष)\b|/\s*m\b|\b(?:s/o|sahab|saab|bhaiya|papa|babu)\b")
 _REL_TYPE_RE = re.compile(r"(?i)\b(S/o|D/o|W/o)\b|(पुत्र|पुत्री|पत्नी|पिता|पति)")
 _DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b|\b(\d{1,2})[./-](\d{1,2})[./-]((?:19|20)\d{2})\b")
-_FNAME_UHID_RE = re.compile(r"(?i)\b((?:SNJ|JJH|UHID|DHH\d*|ADM|IPD|IP)[/_-]?(?:\d{2,4}[/_-])*\d{4,})\b")
+_FNAME_SPLIT_RE = re.compile(r"[_\s]+")
 _NON_PII_JSON_PARENTS = {"facility", "organization", "lab", "hospital", "doctor", "practitioner", "test", "rx", "diagnosis", "vitals", "panels", "results"}
 
 
@@ -267,7 +267,7 @@ def _extract_from_text_blob(ev: RecordEvidence, text: str, guard: MedicalGuard, 
 
     norm_txt = shadow_normalize(text)
     norm_prot = guard.protected_spans(norm_txt)
-    for m in re.finditer(r"(?i)\b(?:age|आयु|उम्र)[ \t]*[:\-]?[ \t]*(\d{1,3})[ \t]*(?:yrs?|years?|वर्ष|y)?(?:[ \t]*/[ \t]*([MF])\b)?|\b(\d{1,3})[ \t]*(?:yrs?|years?|वर्ष)(?:[ \t]*/[ \t]*([MF])\b)?|\b(\d{1,3})[ \t]*(?:y[ \t]*)?/[ \t]*([MF])\b", norm_txt):
+    for m in re.finditer(r"(?i)\b(?:age|आयु|उम्र)[ \t]*[:\-]?[ \t]*(\d{1,3})(?![\dx])[ \t]*(?:yrs?|years?|वर्ष|y)?(?:[ \t]*/[ \t]*([MF])\b)?|\b(\d{1,3})[ \t]*(?:yrs?|years?|वर्ष)(?:[ \t]*/[ \t]*([MF])\b)?|\b(\d{1,3})[ \t]*(?:y[ \t]*)?/[ \t]*([MF])\b", norm_txt):
         # Skip disease durations in clinical history (e.g. "H/O TB 12 yrs back", "x 3 yrs")
         if any(ps < m.end() and pe > m.start() and tag == "MEDICAL" for ps, pe, tag in norm_prot):
             continue
@@ -303,13 +303,12 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
             continue
 
         # Multi-patient index/vitals tables (or generic non-patient readme) shouldn't be assigned one patient ID!
-        rel_low = entry.rel_input_path.lower()
-        is_summary_file = any(x in rel_low for x in ("patient_index", "ward_vitals", "readme_export"))
+        is_summary_file = bool(entry.multi_patient)
 
         if entry.file_type in ("csv", "tsv") and entry.parsed_data:
             rows = entry.parsed_data
             roles = entry.column_roles
-            # Special case: ward_vitals_sheet has patients in headers, not rows -> leave unlinked
+            # Multi-patient tables (patients in headers / JSON keys, not rows) are left unlinked
             if is_summary_file:
                 for rec in entry.records:
                     evs.append(RecordEvidence(rec.record_uid, entry, rec, is_multi_patient_summary=True))
@@ -326,9 +325,10 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
                     role = roles.get(idx, "FREE_TEXT")
                     hdr = str(rows[0][idx]).lower() if idx < len(rows[0]) else ""
                     if role == "PATIENT_NAME":
-                        if "first" in hdr:
+                        hdr_n = re.sub(r"[^a-z]", "", hdr)
+                        if any(x in hdr_n for x in ("first", "given", "fore")):
                             first_parts.append(val)
-                        elif "last" in hdr:
+                        elif any(x in hdr_n for x in ("last", "family", "surname")):
                             last_parts.append(val)
                         else:
                             _add_name_evidence(ev, val, is_relative=False)
@@ -336,7 +336,11 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
                         rm = _REL_TYPE_RE.search(val)
                         if rm:
                             ev.rel_type = (rm.group(1) or "").capitalize() or ev.rel_type
+                        elif re.match(r"(?i)^\s*c/o\b", val) and not ev.rel_type:
+                            ev.rel_type = "C/O"          # structured care-of column: the guardian
                         cleaned_rel = re.sub(r"(?i)^(?:S/o|D/o|W/o|C/O|son of|daughter of|wife of)\s+", "", val).strip()
+                        cleaned_rel = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", cleaned_rel)          # "(PAN: ...)"
+                        cleaned_rel = re.sub(r"(?i)^(?:late|lt\.?|स्व\.?)\s+", "", cleaned_rel.strip()).strip()
                         _add_name_evidence(ev, cleaned_rel, is_relative=True)
                     elif role == "RELATION":
                         if val.lower().startswith(("s", "d", "w")):
@@ -404,8 +408,10 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
                     for ident in res.get("identifier") or []:
                         if isinstance(ident, dict) and isinstance(ident.get("value"), str):
                             sys_u = str(ident.get("system", "")).lower()
-                            if "healthid" in sys_u or "abha" in sys_u:
+                            if "healthid" in sys_u or "abha" in sys_u or "abdm" in sys_u or "ndhm" in sys_u:
                                 _add_id_evidence(ev, "ABHA", ident["value"])
+                            elif "uidai" in sys_u or "aadha" in sys_u:
+                                _add_id_evidence(ev, "AADHAAR", ident["value"])
                             else:
                                 _add_id_evidence(ev, "MRN", ident["value"])
                     for tel in res.get("telecom") or []:
@@ -454,17 +460,21 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
             # Also collect file-level metadata clues (like source_path) if shared across visits
             file_meta_uhids: set[str] = set()
             file_meta_names: list[str] = []
-            meta = entry.parsed_data.get("_export_meta") if isinstance(entry.parsed_data, dict) else None
-            if isinstance(meta, dict) and isinstance(meta.get("source_path"), str):
-                sp_txt = meta["source_path"]
-                for m in re.finditer(r"([A-Za-z]+_[A-Za-z]+)_(\d{5,})", sp_txt):
-                    file_meta_names.append(m.group(1).replace("_", " "))
-                    file_meta_uhids.add(m.group(2))
+            if isinstance(entry.parsed_data, dict):
+                for mk, meta in entry.parsed_data.items():
+                    if not isinstance(meta, dict) or isinstance(meta, list):
+                        continue
+                    for k2, sp_txt in meta.items():
+                        if not isinstance(sp_txt, str) or not any(x in str(k2).lower() for x in ("source", "path", "file")):
+                            continue
+                        for m in re.finditer(r"([A-Za-z]+_[A-Za-z]+)_([A-Za-z0-9.\-]*\d{5,})", sp_txt):
+                            file_meta_names.append(m.group(1).replace("_", " "))
+                            file_meta_uhids.add(_digit_core(m.group(2)))
 
             for rec in entry.records:
                 ev = RecordEvidence(rec.record_uid, entry, rec)
                 node = rec.raw_payload
-                _extract_json_node_evidence(ev, node, guard, entry.date_order_hint == "dmy")
+                _extract_json_node_evidence(ev, node, guard, entry.date_order_hint == "dmy", entry)
                 # Also check filename phone/MRN
                 _extract_filename_clues(ev, entry.rel_input_path)
                 if len(entry.records) == 1:
@@ -488,21 +498,44 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
             _finalize_birth_years(ev)
             evs.append(ev)
 
+    _resolve_filename_clues(evs)
     return evs
 
 
+_PENDING_FNAME_IDS: dict[int, list[tuple[str, str]]] = {}
+
+
 def _extract_filename_clues(ev: RecordEvidence, rel_path: str) -> None:
+    """IDs / phones embedded in a file name. Kept pending: they only count if the same ID is in some content."""
     stem = rel_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-    for m in _FNAME_UHID_RE.finditer(stem):
-        _add_id_evidence(ev, "MRN", m.group(1))
-    for m in re.finditer(r"(?<!\d)([6-9]\d{9})(?!\d)", stem):
-        _add_id_evidence(ev, "PHONE", m.group(1))
-    m_ds = re.match(r"(?i)^Discharge_Summary_([A-Za-z]+_[A-Za-z]+)", stem)
-    if m_ds:
-        _add_name_evidence(ev, m_ds.group(1).replace("_", " "), is_relative=False)
+    found: list[tuple[str, str]] = []
+    for part in [stem] + _FNAME_SPLIT_RE.split(stem):
+        for sp in extract_regex_spans(part.upper()):
+            if sp.kind in ("MRN", "PHONE"):
+                found.append((sp.kind, sp.text))
+    if found:
+        _PENDING_FNAME_IDS[id(ev)] = found
 
 
-def _extract_json_node_evidence(ev: RecordEvidence, node: Any, guard: MedicalGuard, dmy: bool) -> None:
+def _resolve_filename_clues(evs: list[RecordEvidence]) -> None:
+    """Accept a filename ID only when the same ID (or phone) occurs in record content somewhere."""
+    content_ids = set().union(*(e.uhids for e in evs)) if evs else set()
+    content_phones = set().union(*(e.phones for e in evs)) if evs else set()
+    for ev in evs:
+        for kind, raw in _PENDING_FNAME_IDS.pop(id(ev), []):
+            if kind == "PHONE":
+                d = re.sub(r"\D", "", shadow_normalize(raw))[-10:]
+                if d in content_phones:
+                    _add_id_evidence(ev, "PHONE", raw)
+            elif _norm_id_str(raw) in content_ids:
+                _add_id_evidence(ev, "MRN", raw)
+    _PENDING_FNAME_IDS.clear()
+
+
+_REL_PARENT_KEYS = {"guardian", "contact", "relative", "kin", "nok", "attendant", "spouse", "father", "husband", "mother"}
+
+
+def _extract_json_node_evidence(ev: RecordEvidence, node: Any, guard: MedicalGuard, dmy: bool, entry: Any = None) -> None:
     stack: list[tuple[str, Any]] = [("", node)]
     first_parts: list[str] = []
     last_parts: list[str] = []
@@ -533,13 +566,14 @@ def _extract_json_node_evidence(ev: RecordEvidence, node: Any, guard: MedicalGua
                         if kl in ("display", "code", "complaints"):
                             ev.diagnoses.add(sv.lower())
                         continue
-                    role, _ = infer_role_from_header(str(k))
-                    if kl in ("first", "last", "local", "name", "full_name") and pk not in _NON_PII_JSON_PARENTS:
-                        if pk in ("guardian", "contact", "relative"):
+                    role = resolve_key_role(entry, str(k)) if entry is not None else infer_role_from_header(str(k))[0]
+                    pk_rel = pk in _REL_PARENT_KEYS or infer_role_from_header(pk)[0] == "RELATIVE_NAME"
+                    if (kl in ("first", "last", "given", "family", "forename", "surname", "local", "name", "full_name") or role == "PATIENT_NAME") and pk not in _NON_PII_JSON_PARENTS:
+                        if pk_rel:
                             _add_name_evidence(ev, sv, is_relative=True)
-                        elif kl == "first":
+                        elif kl in ("first", "given", "forename"):
                             first_parts.append(sv)
-                        elif kl == "last":
+                        elif kl in ("last", "family", "surname"):
                             last_parts.append(sv)
                         else:
                             _add_name_evidence(ev, sv, is_relative=False)

@@ -14,7 +14,7 @@ from src.models import FileEntry
 _SAFE_SPAN_PATTERNS = [
     # Doctor spans (stopping before bracket/comma/EOL or clinical verbs like 'reviewed', 'took')
     re.compile(
-        r"(?i)(?:\b(?:dr\.?|doctor|consultant|attending(?:\s+physician)?|physician|ref(?:erred)?\s+by|reviewed\s+by|signed\s+by)|डॉ\.?)\s+"
+        r"(?i)(?:\b(?:dr\.?|doctor|consultant|attending(?:\s+physician)?|physician)|डॉ\.?)\s+"
         r"(?:dr\.?\s+)?"
         r"[A-Z\u0900-\u097f][a-zA-Z\u0900-\u097f.]+"
         r"(?:\s+(?!reviewed\b|took\b|is\b|was\b|ordered\b|prescribed\b|advised\b)[A-Z\u0900-\u097f][a-zA-Z\u0900-\u097f.]+){0,2}"
@@ -41,7 +41,7 @@ _SAFE_SPAN_PATTERNS = [
     re.compile(r"(?i)\b(?:BP|Pulse|PR|HR|RR|Temp|SpO2|HbA1c|Hb|RBS|FBS|PPBS|TSH|WBC)\s*[:=]?\s*\d+(?:\.\d+)?(?:/\d+(?:\.\d+)?)?(?:\s*(?:mmhg|/min|%|f|c|g/dl|mg/dl))?"),
     re.compile(r"(?<![\d-])[0-2½]-[0-2½]-[0-2½](?![\d-])"),
     re.compile(r"(?i)\b(?:OD|BD|TDS|QID|HS|SOS|PRN|STAT)\s*(?:x\s*\d+\s*(?:d|days?|wks?|weeks?|months?))?\b"),
-    re.compile(r"(?<![\d-])(?![6-9]\d{4}-\d{5}\b)\d{1,6}(?:\.\d+)?-\d{1,6}(?:\.\d+)?(?![\d-])"),
+    re.compile(r"(?<![\d-])(?!(?:0|91)?[6-9]\d{2,5}-\d{4,7}(?!\d|\.\d))\d{1,6}(?:\.\d+)?-\d{1,6}(?:\.\d+)?(?![\d-])"),
     re.compile(r"(?i)\bx\s*\d+\s*(?:d|days?|wks?|weeks?|months?|yrs?|years?)\b"),
 ]
 
@@ -54,6 +54,8 @@ class MedicalGuard:
         self.hospital_names: set[str] = set()
         self.doctor_full_names: set[str] = set()
         self.doctor_tokens: set[str] = set()
+        self._doc_rx: re.Pattern[str] | None = None
+        self._doc_rx_n = -1
 
     def learn_from_entries(self, entries: list[FileEntry]) -> None:
         """Dynamically harvest clean vocabulary, drugs, ICDs, LOINCs, and doctors from input."""
@@ -110,7 +112,8 @@ class MedicalGuard:
                     self._add_doctor(m.group(0))
 
     def _add_doctor(self, raw: str) -> None:
-        cleaned = re.sub(r"(?i)^(?:dr\.?|doctor|consultant|attending|ref(?:erred)?\s+by|reviewed\s+by|signed\s+by|डॉ\.?)\s+", "", raw).strip()
+        cleaned = re.sub(r"(?i)^(?:dr\.?|doctor|consultant|attending|physician|डॉ\.?)\s+", "", raw).strip()
+        cleaned = re.sub(r"\s*\(.*$", "", cleaned).strip(" .,")
         if cleaned:
             self.doctor_full_names.add(cleaned.lower())
             for tok in re.findall(r"[A-Za-z\u0900-\u097f]{3,}", cleaned):
@@ -144,6 +147,14 @@ class MedicalGuard:
             tag = "DOCTOR" if idx == 0 else "MEDICAL"
             for m in rx.finditer(text):
                 spans.append((m.start(), m.end(), tag))
+        names = [n for n in self.doctor_full_names if len(n.split()) >= 2 and len(n) >= 6]
+        if names and self._doc_rx_n != len(names):
+            ordered = sorted(names, key=lambda x: (-len(x), x))
+            self._doc_rx = re.compile(r"(?i)(?<![\w])(?:" + "|".join(re.escape(n) for n in ordered) + r")(?![\w])")
+            self._doc_rx_n = len(names)
+        if self._doc_rx is not None:
+            for m in self._doc_rx.finditer(text):
+                spans.append((m.start(), m.end(), "DOCTOR"))
         # Also protect C/O when followed by clinical symptoms/terms
         for m in re.finditer(r"(?i)\bC/O\s*[:\-]?\s*([A-Za-z\u0900-\u097f][A-Za-z\u0900-\u097f\s\-]{1,40})", text):
             rhs_words = [w.lower() for w in re.findall(r"[A-Za-z\u0900-\u097f]{2,}", m.group(1)[:30])]

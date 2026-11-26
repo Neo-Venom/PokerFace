@@ -6,7 +6,10 @@ from collections import defaultdict
 from src.config import Policy
 from src.linkage.blocking import generate_candidate_pairs
 from src.linkage.evidence import RecordEvidence
-from src.linkage.scorer import _name_pair_match, compute_token_idf, detect_shared_family_phones, score_pair
+from src.linkage.scorer import (
+    _name_pair_match, compute_token_idf, detect_shared_family_phones, rel_conflict, rel_types_comparable, score_pair,
+    strong_shared,
+)
 from src.security.keys import KeyRing
 
 
@@ -37,7 +40,7 @@ class ConstrainedClusters:
             x = self.parent[x]
         return x
 
-    def _can_merge(self, ra: int, rb: int) -> bool:
+    def _can_merge(self, ra: int, rb: int, strong: bool = False) -> bool:
         if self.genders[ra] and self.genders[rb] and not (self.genders[ra] & self.genders[rb]):
             return False
         if self.dobs[ra] and self.dobs[rb] and not (self.dobs[ra] & self.dobs[rb]):
@@ -54,23 +57,25 @@ class ConstrainedClusters:
             all_y = self.byears[ra] | self.byears[rb]
             if max(all_y) - min(all_y) > 4:
                 return False
+        if strong:
+            # A shared single-person identifier outranks spelling/transliteration differences in names
+            return True
         _, _, name_conf = _name_pair_match(self.names[ra], self.names[rb])
         if name_conf:
             return False
         for rtype, rlist_a in self.rels_by_type[ra].items():
-            if rtype != "*" and rtype in self.rels_by_type[rb]:
-                _, _, rconf = _name_pair_match(rlist_a, self.rels_by_type[rb][rtype])
-                if rconf:
+            for rtype_b, rlist_b in self.rels_by_type[rb].items():
+                if rel_types_comparable(rtype, rtype_b) and rel_conflict(rlist_a, rlist_b):
                     return False
         return True
 
-    def merge(self, i: int, j: int) -> bool:
+    def merge(self, i: int, j: int, strong: bool = False) -> bool:
         ra, rb = self.find(i), self.find(j)
         if ra == rb:
             return False
         if ra > rb:
             ra, rb = rb, ra
-        if not self._can_merge(ra, rb):
+        if not self._can_merge(ra, rb, strong):
             return False
         self.parent[rb] = ra
         self.members[ra].extend(self.members.pop(rb))
@@ -85,6 +90,35 @@ class ConstrainedClusters:
         for rt, rl in self.rels_by_type.pop(rb).items():
             self.rels_by_type[ra].setdefault(rt, []).extend(rl)
         return True
+
+
+AMBIGUITY_MARGIN = 1.5
+
+
+def _ambiguous_records(evs: list[RecordEvidence], uf: ConstrainedClusters,
+                       scored_edges: list[tuple[float, int, int]]) -> set[int]:
+    """Records with no single-person ID of their own that fit two clusters (almost) equally well.
+
+    Example: father and son share a name, a phone and an address; a note naming "Ramesh Sharma" with that
+    phone fits both, and the two clusters may never merge. Linking it to either is a coin flip that
+    precision (F0.5) punishes, so it is linked to neither (patient: null)."""
+    best: dict[int, dict[int, float]] = defaultdict(dict)
+    for sc, i, j in scored_edges:
+        for a, b in ((i, j), (j, i)):
+            rb = uf.find(b)
+            if sc > best[a].get(rb, float("-inf")):
+                best[a][rb] = sc
+    out: set[int] = set()
+    for idx, per_root in best.items():
+        ev = evs[idx]
+        if ev.uhids or ev.uhid_cores or ev.aadhaars or ev.abhas or ev.pans or ev.emails or ev.ins_ids:
+            continue
+        own = uf.find(idx)
+        own_best = per_root.get(own)
+        others = sorted((s for r, s in per_root.items() if r != own), reverse=True)
+        if own_best is not None and others and others[0] >= own_best - AMBIGUITY_MARGIN:
+            out.add(idx)
+    return out
 
 
 def _has_identifying_anchor(ev: RecordEvidence) -> bool:
@@ -115,12 +149,14 @@ def link_and_assign_pseudonyms(
     scored_edges.sort(key=lambda e: (-e[0], evs[e[1]].uid, evs[e[2]].uid))
     uf = ConstrainedClusters(evs)
     for _sc, i, j in scored_edges:
-        uf.merge(i, j)
+        uf.merge(i, j, strong=strong_shared(evs[i], evs[j], shared_phones))
+
+    ambiguous = _ambiguous_records(evs, uf, scored_edges)
 
     # Group clusters deterministically by sorted member UIDs
     groups: dict[int, list[RecordEvidence]] = defaultdict(list)
     for idx, ev in enumerate(evs):
-        if ev.is_multi_patient_summary or not _has_identifying_anchor(ev):
+        if ev.is_multi_patient_summary or not _has_identifying_anchor(ev) or idx in ambiguous:
             ev.record.cluster_id = None
             ev.record.pseudonym = None
             continue

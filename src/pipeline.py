@@ -15,7 +15,7 @@ from src.config import Policy, load_policy
 from src.ingest.csv_handler import parse_csv_entry, serialize_csv_entry
 from src.ingest.fhir_handler import sanitize_fhir_bundle
 from src.ingest.json_handler import parse_json_entry, transform_json_iterative
-from src.ingest.profiler import infer_role_from_header
+from src.ingest.profiler import infer_role_from_header, refine_entry_roles, resolve_key_role
 from src.ingest.router import maybe_rename_rel_path, scan_input_tree
 from src.ingest.text_handler import parse_text_entry, rewrite_text_preserving_lines
 from src.ingest.xml_handler import parse_xml_entry, sanitize_xml_text
@@ -37,6 +37,8 @@ _B64_RE = re.compile(r"^[A-Za-z0-9+/]{24,}={0,2}$")
 _REL_PREFIX_RE = re.compile(r"(?i)^(?:S/o|D/o|W/o|C/O|son of|daughter of|wife of)\s+")
 _PIN_6_RE = re.compile(r"\b([1-8]\d{5})\b")
 _PIN3_MASKED_RE = re.compile(r"(?<!\d)([1-8]\d{2})\*{3}(?!\d)")
+_ENCOUNTER_KEY_WORDS = ("visit", "encounter", "claim", "bill", "sample", "accession", "invoice", "receipt", "token",
+                        "slip", "order", "ticket", "trip", "batch", "lot")
 _NON_PII_JSON_PARENTS = {"facility", "organization", "lab", "hospital", "doctor", "practitioner", "test", "rx", "diagnosis", "vitals", "panels", "results"}
 
 
@@ -175,7 +177,7 @@ def _harvest_entry(entry: FileEntry, guard: MedicalGuard, harvester: PiiHarveste
                                 _harvest_text_spans(dec, guard, harvester)
                             except Exception:
                                 pass
-                        role, _ = infer_role_from_header(ks)
+                        role = resolve_key_role(entry, ks)
                         if kl in ("first", "last", "local", "name", "full_name") and parent_key not in _NON_PII_JSON_PARENTS:
                             harvester.add_name(sv)
                         elif role == "PATIENT_NAME" and parent_key not in _NON_PII_JSON_PARENTS:
@@ -187,7 +189,11 @@ def _harvest_entry(entry: FileEntry, guard: MedicalGuard, harvester: PiiHarveste
                         elif role == "VILLAGE" or kl in ("village", "city"):
                             if parent_key not in ("organization", "facility", "hospital"):
                                 harvester.add_address_piece(sv)
-                        elif kl in ("line", "address", "address_note", "source_path", "remarks", "notes", "div"):
+                        elif role == "ADDRESS" or kl in ("line", "address", "address_note", "source_path", "remarks", "notes", "div"):
+                            _harvest_text_spans(sv, guard, harvester)
+                        elif role == "TEHSIL":
+                            pass
+                        elif role is None and len(sv) >= 8 and " " in sv:
                             _harvest_text_spans(sv, guard, harvester)
             elif isinstance(node, list):
                 for item in node:
@@ -199,6 +205,61 @@ def _harvest_entry(entry: FileEntry, guard: MedicalGuard, harvester: PiiHarveste
 
     if entry.text_decoded:
         _harvest_text_spans(entry.text_decoded, guard, harvester)
+
+
+_ADDR_WORD_RE = re.compile(r"[A-Z][A-Za-z'\-]{1,30}|[\u0900-\u097f]{2,30}")
+_PLACEHOLDER_RE = re.compile(r"\[(?:ADDRESS|NAME|RELATIVE|PHONE|ID|PIN|EMAIL|DOB)\]")
+
+
+def _fail_closed_address(text: str) -> str:
+    """Inside an address field, every remaining proper noun is location PII unless it is a public district/state."""
+    from data.gazetteers import KNOWN_GEO_DISTRICTS_STATES
+
+    placeholders = [(m.start(), m.end()) for m in _PLACEHOLDER_RE.finditer(text)]
+
+    def _repl(m: "re.Match[str]") -> str:
+        if any(ps <= m.start() < pe for ps, pe in placeholders):
+            return m.group(0)
+        if m.group(0).lower() in KNOWN_GEO_DISTRICTS_STATES:
+            return m.group(0)
+        return "[ADDRESS]"
+
+    out = _ADDR_WORD_RE.sub(_repl, text)
+    return re.sub(r"\[ADDRESS\](?:[ \t]+\[ADDRESS\])+", "[ADDRESS]", out)
+
+
+def _pii_label_count(labels: list[str], guard: MedicalGuard, harvester: PiiHarvester, cap: int = 2) -> int:
+    n = 0
+    for lab in labels:
+        s = str(lab)
+        if len(s) < 4:
+            continue
+        spans = [sp for sp in extract_regex_spans(s) if sp.kind in ("MRN", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "EMAIL")]
+        # a single swept token ("Full" in "Guardian_Full") is not evidence; a multi-word name or an ID is
+        names = [sp for sp in harvester.sweep_spans(s) if sp.kind != "PATIENT_NAME" or len(sp.text.split()) >= 2]
+        if spans or names:
+            n += 1
+            if n >= cap:
+                break
+    return n
+
+
+def _looks_multi_patient(entry: FileEntry, guard: MedicalGuard, harvester: PiiHarvester) -> bool:
+    """A table whose column headers or JSON keys carry patient identifiers belongs to several patients."""
+    if entry.file_type in ("csv", "tsv") and entry.parsed_data:
+        return _pii_label_count([str(h) for h in entry.parsed_data[0]], guard, harvester) >= 2
+    if entry.file_type == "json" and entry.parsed_data is not None:
+        keys: list[str] = []
+        stack: list[Any] = [entry.parsed_data]
+        while stack and len(keys) < 4000:
+            node = stack.pop()
+            if isinstance(node, dict):
+                keys.extend(str(k) for k in node.keys())
+                stack.extend(v for v in node.values() if isinstance(v, (dict, list)))
+            elif isinstance(node, list):
+                stack.extend(v for v in node if isinstance(v, (dict, list)))
+        return _pii_label_count(keys, guard, harvester) >= 2
+    return False
 
 
 def _rewrite_entry(
@@ -268,21 +329,25 @@ def _rewrite_entry(
         headers = [str(h).lower() for h in (entry.parsed_data[0] if entry.parsed_data else [])]
         # Pick primary ID column for PSN injection (prefer patient UHID/Reg/PatientID over bill_no/sample_id)
         psn_col_idx: int | None = None
-        for idx, role in roles.items():
+        for idx, role in sorted(roles.items()):
             hdr = headers[idx] if idx < len(headers) else ""
-            if role == "MRN" and not any(x in hdr for x in ("bill", "sample")):
+            if role == "MRN" and not any(x in hdr for x in _ENCOUNTER_KEY_WORDS):
                 psn_col_idx = idx
                 break
         if psn_col_idx is None:
-            for idx, role in roles.items():
+            for idx, role in sorted(roles.items()):
                 if role == "PATIENT_NAME":
                     psn_col_idx = idx
                     break
         text_psn_col_idx: int | None = None
         if psn_col_idx is None:
-            for idx, role in roles.items():
-                if role in ("NOTES", "FREE_TEXT"):
-                    text_psn_col_idx = idx
+            for want in ("NOTES", "ADDRESS", "FREE_TEXT"):
+                for idx, role in sorted(roles.items()):
+                    if role == want:
+                        text_psn_col_idx = idx
+                        break
+                if text_psn_col_idx is not None:
+                    break
 
         def _scrub_header(h: str) -> str:
             cleaned, spans = resolve_and_scrub(h, guard, harvester)
@@ -366,7 +431,7 @@ def _rewrite_entry(
                 elif role == "DOCTOR":
                     out.append(val)
                 elif role == "ADDRESS":
-                    out.append(_scrub_str(val, rec_uid=uid, is_address=True))
+                    out.append(_fail_closed_address(_scrub_str(val, rec_uid=uid, is_address=True)))
                 else:
                     out.append(_scrub_str(val, rec_uid=uid))
             return out
@@ -424,8 +489,11 @@ def _rewrite_entry(
         def _rec_for_path(path: str) -> tuple[str, Any]:
             if doc_rec is not None:
                 return "doc", doc_rec
-            for ptr, r_obj in rec_by_ptr.items():
-                if path == ptr or path.startswith(ptr + "/"):
+            parts = path.split("/")
+            for i in range(len(parts), 1, -1):  # longest record pointer that covers this path
+                ptr = "/".join(parts[:i])
+                r_obj = rec_by_ptr.get(ptr)
+                if r_obj is not None:
                     return ptr, r_obj
             return "", None
 
@@ -455,7 +523,7 @@ def _rewrite_entry(
             if val is None or isinstance(val, bool):
                 return val
             if isinstance(val, (int, float)):
-                role, _ = infer_role_from_header(key_name)
+                role = resolve_key_role(entry, key_name)
                 if role in ("AADHAAR", "ABHA", "PHONE", "MRN", "INSURANCE_ID") or kl in ("aadhar_no", "aadhaar", "mobile", "phone"):
                     entity_counts[role or "AADHAAR"] += 1
                     return 0
@@ -484,8 +552,9 @@ def _rewrite_entry(
             if "/facility/" in pl or "/organization/" in pl or kl == "lab":
                 return val
 
-            role, _ = infer_role_from_header(key_name)
-            if r_psn and ptr_key not in psn_placed_for_ptr and (kl in ("patient_ref", "hospital_uhid", "uhid", "reg_code", "hosp_ref", "subject_ref") or role == "MRN"):
+            role = resolve_key_role(entry, key_name)
+            is_encounter_key = any(x in kl for x in _ENCOUNTER_KEY_WORDS)
+            if r_psn and ptr_key not in psn_placed_for_ptr and (kl in ("patient_ref", "hospital_uhid", "uhid", "reg_code", "hosp_ref", "subject_ref") or (role == "MRN" and not is_encounter_key)):
                 entity_counts["MRN"] += 1
                 psn_placed_for_ptr.add(ptr_key)
                 return r_psn
@@ -493,7 +562,7 @@ def _rewrite_entry(
                 if "/guardian/" in pl:
                     entity_counts["RELATIVE_NAME"] += 1
                     return "[RELATIVE]"
-                if "/raised_by/" in pl:
+                if any(x in pl for x in ("/raised_by/", "/caller/", "/reporter/", "/submitted_by/", "/requested_by/", "/contact_person/")):
                     entity_counts["PATIENT_NAME"] += 1
                     if r_psn and ptr_key not in psn_placed_for_ptr and kl in ("name", "full_name", "first"):
                         psn_placed_for_ptr.add(ptr_key)
@@ -528,8 +597,9 @@ def _rewrite_entry(
             if role == "DATE" or kl in ("visit_date", "collected", "reported_on", "registered_on", "admission_date", "discharge_date", "generated_at", "date", "timestamp"):
                 return shift_date_value(val, delta_days=r_delta, dmy=dmy, anchor_year=r_anchor)
             if role in ("AADHAAR", "ABHA", "PAN", "INSURANCE_ID", "MRN") or kl in ("aadhar_no", "uhid", "patient_ref", "hospital_uhid"):
+                mapped_id = _lookup_summary_psn(val)
                 entity_counts[role or "MRN"] += 1
-                return "[ID]"
+                return mapped_id or "[ID]"
             if role == "PIN" or kl in ("pin", "postalcode", "zip"):
                 entity_counts["PIN"] += 1
                 digits = re.sub(r"\D", "", shadow_normalize(val))
@@ -545,6 +615,8 @@ def _rewrite_entry(
             if mapped_val:
                 entity_counts["MRN"] += 1
                 return mapped_val
+            if role == "ADDRESS" and "/facility/" not in pl and "/organization/" not in pl:
+                return _fail_closed_address(_scrub_str(val, rec_uid=r_uid, is_address=True))
             return _scrub_str(val, rec_uid=r_uid)
 
         cleaned = transform_json_iterative(entry.parsed_data, scrub_key_fn=_scrub_key, scrub_val_fn=_scrub_val)
@@ -606,11 +678,17 @@ def run_pipeline(input_dir: Path, output_dir: Path, policy: Policy | None = None
     # Pass 1: Learn runtime clinical lexicon & harvest PII registry
     guard = MedicalGuard()
     guard.learn_from_entries(entries)
+    for entry in entries:
+        if entry.status == "sanitized" and not entry.is_clean_doc:
+            refine_entry_roles(entry, guard)
 
     harvester = PiiHarvester(guard)
     for entry in entries:
         _harvest_entry(entry, guard, harvester)
     harvester.compile()
+    for entry in entries:
+        if entry.status == "sanitized" and not entry.is_clean_doc:
+            entry.multi_patient = _looks_multi_patient(entry, guard, harvester)
 
     # Global Cross-Script Record Linkage (Phase 4)
     evs = extract_all_evidence(entries, guard)

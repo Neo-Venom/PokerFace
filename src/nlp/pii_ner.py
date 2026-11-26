@@ -15,7 +15,7 @@ from data.gazetteers import (
     KNOWN_GEO_DISTRICTS_STATES,
 )
 from src.models import FileEntry, Span
-from src.nlp.indic_norm import GENERIC_WEAK_TOKENS, deobfuscate_unicode, detect_script, name_tokens, normalize_name_token, romanize_token, shadow_normalize
+from src.nlp.indic_norm import GENERIC_WEAK_TOKENS, deobfuscate_unicode, detect_script, name_tokens, normalize_name_token, romanize_token, shadow_normalize, unquote_percent_text
 from src.nlp.medical_guard import MedicalGuard
 from src.nlp.pii_regex import extract_regex_spans
 
@@ -23,7 +23,7 @@ _NORM_INDIAN_NAMES = {normalize_name_token(n) for n in COMMON_INDIAN_NAMES if le
 
 # ------------------------------------------------------------------ Context patterns
 _LABEL_NAME_RE = re.compile(
-    r"(?i)(?:(?:\b(?:Patient(?:'s)?[ \t]+Name|Pt\.?[ \t]*(?:Full[ \t]+)?Name|Name|Naam)|मरीज़[ \t]+का[ \t]+नाम|मरीज[ \t]+का[ \t]+नाम|रोगी[ \t]+का[ \t]+नाम|नाम)[ \t]*[:\-][ \t]*"
+    r"(?i)(?:(?:\b(?:Patient(?:'s)?[ \t]+Name|Pt\.?[ \t]*(?:Full[ \t]+)?Name|Name|Naam|Patient|Pt|Beneficiary|Insured(?:[ \t]+Person)?|Member|Rogi|Client)|रोगी|मरीज़[ \t]+का[ \t]+नाम|मरीज[ \t]+का[ \t]+नाम|रोगी[ \t]+का[ \t]+नाम|नाम)[ \t]*[:\-][ \t]*"
     r"|\bReport[ \t]+of[ \t]+)"
     r"([^\n,;|\[\]]{2,55})"
 )
@@ -52,20 +52,54 @@ _HONORIFIC_AFTER_RE = re.compile(
     r"(?:ji|sahab|saab|sahib|didi|behenji|bhai|bhaiya|babu|amma|papa|chacha|chachu|garu|anna|akka|जी|साहब|दीदी)\b"
 )
 
+# Mixed-script names ("लखन Lepcha", "Rajesh कुमार") are tried first, then Latin title-case names.
+_MIXED_TOKS = r"[ऀ-ॿ]{2,20}[ \t]+[A-Z][a-zA-Z'\-]{1,24}|[A-Z][a-zA-Z'\-]{1,24}[ \t]+[ऀ-ॿ]{2,20}(?![ऀ-ॿ])"
+_TITLE_TOKS = (r"(?:" + _MIXED_TOKS + r"|(?:(?:Md|Mohd|Mohammad)\.?[ \t]+)?[A-Z][a-zA-Z'\-]{1,24}"
+               r"(?:[ \t]+(?:[A-Z][a-zA-Z'\-]{1,24}|[A-Z]\.))?(?:[ \t]+[A-Z][a-zA-Z'\-]{1,24}){0,1})")
+_DEVA_TOKS = r"[\u0900-\u097f]{2,20}(?:[ \t]+[\u0900-\u097f]{2,20}){0,2}"
+
 _HONORIFIC_BEFORE_RE = re.compile(
-    r"(?i)\b(?:Shri|Smt\.?|Km\.?|Mr\.?|Mrs\.?|Ms\.?|Master|श्री|श्रीमती|कुमारी)[ \t]+"
-    r"([A-Z\u0900-\u097f][A-Za-z\u0900-\u097f. \t]{1,40}?)(?=,|\n|;|\)|$)"
+    r"\b(?i:Shri|Sri|Smt\.?|Km\.?|Kumari|Mr\.?|Mrs\.?|Ms\.?|Master|Pt\.?|Patient|Late|Baby[ \t]+of|B/o)[ \t]+"
+    r"(" + _TITLE_TOKS + r")"
+    r"|(?:श्री|श्रीमती|कुमारी|स्व\.)[ \t]*(" + _DEVA_TOKS + r")"
 )
+
+# Name directly followed by an age/sex marker: "Thiruvenkadam (62M)", "Kezhokhoto Sema (aged 44)", "Ravi, 34 yrs"
+_AGE_ANCHOR_NAME_RE = re.compile(
+    r"(" + _TITLE_TOKS + r")[ \t]*(?:\([ \t]*(?:aged?[ \t]*)?\d{1,3}[ \t]*(?:Y|y|yrs?|years?)?[ \t]*/?[ \t]*(?:[MFmf]\b)?[ \t]*\)"
+    r"|,[ \t]*\d{1,3}[ \t]*(?:yrs?|years?|Y)\b|,[ \t]*(?:a[ \t]+)?\d{1,3}-year-old"
+    r"|[ \t]+\d{1,3}[ \t]*(?:Y|y|yrs?|years?)?[ \t]*/[ \t]*[MFmf]\b)"
+)
+
+# Relation noun + name: "brought by son Arivazhagan", "unke pati Zothanmawia ne", "Attendant Venkatesh Murmu"
+_REL_NOUN_RE = re.compile(
+    r"\b(?i:son|daughter|husband|wife|brother|sister|mother|father|nephew|niece|grandson|granddaughter|uncle|aunt"
+    r"|beta|beti|pati|patni|bhai|behen|bhabhi|devar|sasur|saas|chacha|mama|attendant|relative|guardian|caretaker|nok|kin)"
+    r"(?:[ \t]+(?i:of|named|is))?[ \t]*[:\-]?[ \t]*(" + _TITLE_TOKS + r")"
+    r"|(?:पिता|पति|पत्नी|पुत्र|पुत्री|बेटा|बेटी|माता|भाई|बहन|अभिभावक|परिजन)[ \t]*[:\-]?[ \t]*(" + _DEVA_TOKS + r")"
+)
+
+# "Bed 7: Kezhokhoto Sema", "Bed 12 pe Ravi Kumar"
+_BED_NAME_RE = re.compile(r"\b(?i:bed)(?:[ \t]*(?i:no)\.?)?[ \t]*\d{1,3}[ \t]*(?:[:\-–]|(?i:pe|par|par\b))[ \t]*(" + _TITLE_TOKS + r")")
+
+# "a 97-year-old man from Hirakhera Chhota" -> village
+_FROM_PLACE_RE = re.compile(
+    r"(?i:year[- ]old|yrs?|aged[ \t]+\d{1,3})[ \t]+(?i:man|woman|male|female|boy|girl|patient|lady|gentleman)?[ \t]*(?i:from|of)[ \t]+"
+    r"([A-Z][a-zA-Z]{2,24}(?:[ \t]+[A-Z][a-zA-Z]{2,24}){0,2})"
+)
+
+_DEVA_STOP = {"ने", "को", "का", "की", "के", "से", "है", "हैं", "और", "या", "में", "पर", "जी", "ने", "था", "थी", "थे", "बताया", "आए", "आई"}
 
 _POSTPOS_NAME_RE = re.compile(
     r"([A-Z\u0900-\u097f][a-zA-Z\u0900-\u097f]{2,25}(?:[ \t]+[A-Z\u0900-\u097f][a-zA-Z\u0900-\u097f]{2,25})?)[ \t]+"
-    r"(?:ka|ki|ke|ko|को|का|की|के)[ \t]+(?:\d+[ \t]+(?:दिन|days)|BP|pulse|temp|condition|dawai|bukhar|बुखार)\b",
-    re.I,
+    r"(?i:ka|ki|ke|ko|को|का|की|के)[ \t]+(?i:\d+[ \t]+(?:दिन|days)|BP|pulse|temp|condition|dawai|bukhar|sugar|report|phone|बुखार)\b"
 )
 
 _PERSON_VERB_RE = re.compile(
-    r"(?i)(?:\b(?:called[ \t]+by|witnessed[ \t]+by|raised[ \t]+by|accompanied[ \t]+by|informed[ \t]+by|sample[ \t]+received[ \t]+from)|'s[ \t]+attendant)[ \t]*"
-    r"([A-Z\u0900-\u097f][A-Za-z\u0900-\u097f. \t]{1,45}?)(?=,|\n|;|\(|\.|9\d{4}|[6-9]\d{4}|\bphone\b|\bmob\b|$)"
+    r"(?:\b(?i:called[ \t]+by|witnessed[ \t]+by|raised[ \t]+by|accompanied[ \t]+by|informed[ \t]+by|brought[ \t]+by|sample[ \t]+received[ \t]+from"
+    r"|signed[ \t]+by|consent(?:ed)?[ \t]+by|given[ \t]+by|issued[ \t]+to|handed[ \t]+over[ \t]+to|picked[ \t]+up|dropped[ \t]+off|received[ \t]+from"
+    r"|visited[ \t]+by|enquiry[ \t]+(?:by|from)|complaint[ \t]+(?:by|from)|spoke[ \t]+(?:to|with)|refund[ \t]+to|registered[ \t]+by)|'s[ \t]+attendant)[ \t]*"
+    r"(" + _TITLE_TOKS + r")"
 )
 
 _POSSESSIVE_RE = re.compile(r"\b([A-Z][a-z]{2,24})'s\b")
@@ -97,9 +131,36 @@ _PRIORITY = {
 }
 
 
+# Words that are labels / facility words, never part of a person's name
+LABEL_STOP = {
+    "age", "sex", "gender", "name", "naam", "patient", "pt", "tab", "tablet", "inj", "injection", "cap", "capsule",
+    "syp", "syrup", "dr", "ward", "bed", "dist", "district", "vill", "village", "tal", "taluka", "tehsil", "ph",
+    "mob", "mobile", "phone", "uhid", "ipd", "opd", "reg", "no", "date", "dob", "kin", "address", "add", "hno",
+    "house", "near", "opp", "pin", "ref", "rx", "dx", "diagnosis", "visit", "admitted", "discharged", "status",
+    "remarks", "notes", "relation", "contact", "email", "aadhaar", "abha", "id", "yrs", "years", "parchi",
+    "summary", "report", "forwarded", "attachment", "consent", "witness", "nursing", "shift", "note", "notes",
+    "unit", "round", "department", "dept", "section", "floor", "room", "opd", "icu", "casualty", "emergency",
+    "medicine", "surgery", "obstetrics", "gynaecology", "paediatrics", "orthopaedics", "general", "block",
+    "full", "fullname", "first", "last", "given", "family", "surname", "middle", "names", "code", "num", "number",
+}
+FACILITY_WORDS = {
+    "hospital", "hospitals", "trust", "clinic", "chikitsalaya", "sevashram", "mission", "diagnostics", "diagnostic",
+    "pathology", "lab", "labs", "laboratory", "nursing", "college", "centre", "center", "institute", "foundation",
+    "dispensary", "phc", "chc", "sadan", "ashram", "pharmacy", "medicals", "अस्पताल", "चिकित्सालय",
+}
+
+
+def _is_hospital_fragment(joined_low: str, guard: MedicalGuard) -> bool:
+    if any(w in FACILITY_WORDS for w in joined_low.split()):
+        return True
+    return any(h and (joined_low in h or h in joined_low) for h in guard.hospital_names)
+
+
 def _is_valid_name_candidate(raw: str, guard: MedicalGuard) -> bool:
     toks = [t.strip(".,:;()[]'\"") for t in raw.split() if t.strip(".,:;()[]'\"")]
     if not toks:
+        return False
+    if _is_hospital_fragment(" ".join(toks).lower(), guard):
         return False
     # Reject if every token is a clinical/stopword/geo term
     meaningful = []
@@ -138,7 +199,28 @@ def extract_context_name_spans(text: str, guard: MedicalGuard, anchor_spans: lis
         s, e = start + lpad, end - rpad
         if s >= e:
             return
+        # Trim label / facility words off both ends ("Ishani    Age" -> "Ishani", "Tab Metformin" -> rejected)
+        while True:
+            frag = text[s:e]
+            parts = list(re.finditer(r"\S+", frag))
+            if not parts:
+                return
+            first_w = parts[0].group(0).strip(".,:;()[]'\"").lower()
+            last_w = parts[-1].group(0).strip(".,:;()[]'\"").lower()
+            if first_w in LABEL_STOP:
+                s = s + (parts[1].start() if len(parts) > 1 else len(frag))
+                continue
+            if last_w in LABEL_STOP and len(parts) > 1:
+                e = s + parts[-2].end()
+                continue
+            break
+        if s >= e:
+            return
         frag = text[s:e]
+        # "Brahmaputra Care Trust Hospital": a run right before a facility word is a hospital name
+        nxt = re.match(r"[ \t]+([A-Za-z\u0900-\u097f]+)", text[e : e + 40])
+        if nxt and nxt.group(1).lower() in FACILITY_WORDS:
+            return
         if _is_valid_name_candidate(frag, guard):
             spans.append(Span(s, e, kind, frag, script=detect_script(frag)))
 
@@ -177,7 +259,31 @@ def extract_context_name_spans(text: str, guard: MedicalGuard, anchor_spans: lis
             _add(start_pos, m.end(1), "PATIENT_NAME")
 
     for m in _HONORIFIC_BEFORE_RE.finditer(text):
+        g = 1 if m.group(1) else 2
+        _add(m.start(g), m.end(g), "PATIENT_NAME")
+
+    for m in _AGE_ANCHOR_NAME_RE.finditer(text):
         _add(m.start(1), m.end(1), "PATIENT_NAME")
+
+    for m in _BED_NAME_RE.finditer(text):
+        _add(m.start(1), m.end(1), "PATIENT_NAME")
+
+    for m in _REL_NOUN_RE.finditer(text):
+        g = 1 if m.group(1) else 2
+        st, en = m.start(g), m.end(g)
+        if g == 2:  # trim trailing Hindi function words ("रमेश ने बताया")
+            toks = text[st:en].split()
+            while toks and toks[-1] in _DEVA_STOP:
+                toks.pop()
+            if not toks:
+                continue
+            en = st + len(" ".join(toks)) if text[st:en].startswith(" ".join(toks)) else en
+        _add(st, en, "RELATIVE_NAME")
+
+    for m in _FROM_PLACE_RE.finditer(text):
+        frag = m.group(1)
+        if not guard.is_clinical_word(frag.split()[0]):
+            spans.append(Span(m.start(1), m.end(1), "VILLAGE", frag, script=detect_script(frag)))
 
     for m in _POSTPOS_NAME_RE.finditer(text):
         cand = m.group(1)
@@ -213,6 +319,8 @@ def extract_context_name_spans(text: str, guard: MedicalGuard, anchor_spans: lis
     if anchor_positions:
         for m in re.finditer(r"\b([A-Z][a-z]{2,18}\s+[A-Z][a-z]{2,18}(?:\s+[A-Z][a-z]{2,18})?)\b", text):
             if any(abs(m.start() - ap) <= 90 for ap in anchor_positions):
+                if any(guard.is_clinical_word(w) or w.lower() in LABEL_STOP for w in m.group(1).split()):
+                    continue
                 _add(m.start(1), m.end(1), "PATIENT_NAME")
 
     # 8. Two-token Pan-India gazetteer match (Latin & Devanagari)
@@ -257,7 +365,7 @@ class PiiHarvester:
         clean = " ".join(name.strip(" .,;:\t()[]'\"").split())
         if len(clean) < 3:
             return
-        if any(h in clean.lower() for h in self.guard.hospital_names if h):
+        if _is_hospital_fragment(clean.lower(), self.guard):
             return
         toks = [t.strip(".,:;()[]'\"") for t in clean.split()]
         # Skip if doctor prefix
@@ -271,6 +379,7 @@ class PiiHarvester:
             and t.lower() not in HONORIFICS_AFTER
             and not self.guard.is_clinical_word(t)
             and t.lower() not in KNOWN_GEO_DISTRICTS_STATES
+            and t.lower().strip(".") not in LABEL_STOP
         ]
         if len(meaningful) >= 2:
             self.full_names.add(clean)
@@ -292,7 +401,7 @@ class PiiHarvester:
             self.digit_cores.add(digits)
             if len(digits) >= 6:
                 self.digit_cores.add(digits[-6:])
-        # Trailing numeric component after slash/dash (e.g. DHH2026-084999 -> 084999, SNJ/26/064545 -> 064545)
+        # Trailing numeric component after slash/dash (e.g. ABC2026-084999 -> 084999, XYZ/26/064545 -> 064545)
         for grp in re.findall(r"(\d{5,})", shadow_normalize(s)):
             self.digit_cores.add(grp)
 
@@ -480,9 +589,10 @@ def resolve_and_scrub(
     """Run all detection layers, subtract protected medical/doctor spans, resolve overlaps, and rewrite."""
     if not text or not text.strip():
         return text, []
-    text = deobfuscate_unicode(text)
+    text = unquote_percent_text(deobfuscate_unicode(text))
     if len(text) <= 49152:
-        return _resolve_chunk(text, guard, harvester, psn, replace_primary_id_with_psn)
+        cl, sps = _resolve_chunk(text, guard, harvester, psn, replace_primary_id_with_psn)
+        return _pin_after_address(cl), sps
     out_parts: list[str] = []
     all_spans: list[Span] = []
     offset = 0
@@ -495,4 +605,12 @@ def resolve_and_scrub(
         for sp in sps:
             all_spans.append(Span(sp.start + offset, sp.end + offset, sp.kind, sp.text, script=sp.script))
         offset += len(ch)
-    return "".join(out_parts), all_spans
+    return _pin_after_address("".join(out_parts)), all_spans
+
+
+# A 6-digit number directly after a removed village/locality ("Rampur 247451" -> "[ADDRESS] 247451") is its PIN.
+_PIN_AFTER_ADDR_RE = re.compile(r"(\[ADDRESS\][ \t,\-–]*(?:(?i:pin(?:\s*code)?)[\s:\-]*)?)[1-8][0-9]{5}(?![0-9])")
+
+
+def _pin_after_address(cleaned: str) -> str:
+    return _PIN_AFTER_ADDR_RE.sub(r"\1[PIN]", cleaned) if "[ADDRESS]" in cleaned else cleaned

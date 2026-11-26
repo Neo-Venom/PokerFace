@@ -103,12 +103,17 @@ def _collect_date_strings(obj: Any) -> list[str]:
     return vals
 
 
+def _reject_constant(name: str):
+    """NaN / Infinity are not JSON (RFC 8259): such a file cannot be re-emitted as valid JSON."""
+    raise ValueError(f"invalid JSON constant {name}")
+
+
 def parse_json_entry(entry: FileEntry, policy: Policy) -> None:
     text = entry.text_decoded or ""
     prev = sys.getrecursionlimit()
     try:
         sys.setrecursionlimit(max(prev, 5000))
-        data = json.loads(text)
+        data = json.loads(text, parse_constant=_reject_constant)
     except RecursionError:
         entry.status = "quarantined"
         entry.rel_output_path = None

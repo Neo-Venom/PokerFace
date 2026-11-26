@@ -37,7 +37,9 @@ _TEXT_DATE_RE = re.compile(
     r"|\b(\d{1,2})([./-])(\d{1,2})\5((?:19|20)\d{2})\b"
     r"|\b(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?(?:\s*,?\s*((?:19|20)\d{2}))?\b"
     r"|\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+(\d{1,2})(?:\s*,?\s*((?:19|20)\d{2}))?\b"
-    r"|(?<=\[)(\d{1,2})/(\d{1,2})/(\d{2})(?=,)",
+    r"|(?<=\[)(\d{1,2})/(\d{1,2})/(\d{2})(?=,)"
+    r"|\b(\d{1,2})([-/.])(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\18((?:19|20)\d{2})\b"
+    r"|(?<![\d/.\-])(\d{1,2})([./-])(\d{1,2})\22(\d{2})(?![\d/\-]|\.\d)",
     re.IGNORECASE,
 )
 
@@ -111,7 +113,8 @@ def shift_date_value(raw: str, delta_days: int, dmy: bool = True, anchor_year: i
 
 
 def _format_named_month(nd: dt.date, orig_mon: str, day_first: bool, has_year: bool) -> str:
-    mon_out = _MONTH_FULL[nd.month] if len(orig_mon.rstrip(".")) > 4 else _MONTH_ABBR[nd.month]
+    is_full = orig_mon.rstrip(".").lower() in {m.lower() for m in _MONTH_FULL if m} or len(orig_mon.rstrip(".")) > 4
+    mon_out = _MONTH_FULL[nd.month] if is_full else _MONTH_ABBR[nd.month]
     if day_first:
         return f"{nd.day} {mon_out} {nd.year}" if has_year else f"{nd.day} {mon_out}"
     return f"{mon_out} {nd.day}, {nd.year}" if has_year else f"{mon_out} {nd.day}"
@@ -189,6 +192,29 @@ def shift_dates_in_text(
                     day, mon = mon, day
                 nd = _shift_d(dt.date(yr, mon, day), delta_days)
                 repl = f"{nd.day:02d}/{nd.month:02d}/{nd.year % 100:02d}"
+            elif m.group(17):
+                # 30-Oct-2025 / 30.Oct.2025 (format preserved)
+                day_s, sep, mon_tok, y_s = m.group(17), m.group(18), m.group(19), m.group(20)
+                mon = _MONTH_NAMES.get(mon_tok.lower()[:3], 0) or _MONTH_NAMES.get(mon_tok.lower(), 0)
+                if mon and 1 <= int(day_s) <= 31:
+                    nd = _shift_d(dt.date(int(y_s), mon, int(day_s)), delta_days)
+                    d_out = f"{nd.day:02d}" if len(day_s) == 2 else str(nd.day)
+                    m_out = _MONTH_ABBR[nd.month] if mon_tok[:1].isupper() else _MONTH_ABBR[nd.month].lower()
+                    if mon_tok.isupper():
+                        m_out = m_out.upper()
+                    repl = f"{d_out}{sep}{m_out}{sep}{nd.year}"
+            elif m.group(21):
+                # 14/03/25 two-digit year (outside protected clinical spans)
+                a_s, sep, b_s, yy = m.group(21), m.group(22), m.group(23), int(m.group(24))
+                a, b = int(a_s), int(b_s)
+                yr = 2000 + yy if yy <= 35 else 1900 + yy
+                day, mon = (a, b) if dmy else (b, a)
+                if not (1 <= mon <= 12) and (1 <= day <= 12):
+                    day, mon = mon, day
+                if 1 <= mon <= 12 and 1 <= day <= 31:
+                    nd = _shift_d(dt.date(yr, mon, day), delta_days)
+                    first, second = (nd.day, nd.month) if (day == a) else (nd.month, nd.day)
+                    repl = f"{first:02d}{sep}{second:02d}{sep}{nd.year % 100:02d}"
         except ValueError:
             repl = orig
         parts.append(repl)

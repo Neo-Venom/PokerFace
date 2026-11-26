@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter, defaultdict
 
 from rapidfuzz.distance import JaroWinkler
@@ -88,13 +89,14 @@ def detect_shared_family_phones(evs: list[RecordEvidence]) -> set[str]:
         if len(by_years) >= 2 and (by_years[-1] - by_years[0]) > 5:
             shared.add(ph)
             continue
-        # Distinct full names on same phone
-        multi_names = [ev.full_names for ev in group if any(len(fn) >= 2 for fn in ev.full_names)]
-        if len(multi_names) >= 2:
-            base = multi_names[0]
-            for other in multi_names[1:]:
-                _, _, conf = _name_pair_match(base, other)
-                if conf:
+        # Distinct people on the same phone: their GIVEN names differ (spouses, parent/child).
+        # A surname spelled differently across scripts ("Mathew" / "मैथ्यू") is still one person.
+        givens = [{fn[0] for fn in ev.full_names if len(fn) >= 2} for ev in group]
+        givens = [g for g in givens if g]
+        if len(givens) >= 2:
+            base = givens[0]
+            for other in givens[1:]:
+                if not any(_tok_sim(x, y) >= 0.88 for x in base for y in other):
                     shared.add(ph)
                     break
     return shared
@@ -110,8 +112,74 @@ def compute_token_idf(evs: list[RecordEvidence]) -> dict[str, float]:
     return {t: min(6.5, max(1.0, math.log2(n / max(1, c)))) for t, c in counts.items()}
 
 
-def has_hard_veto(a: RecordEvidence, b: RecordEvidence) -> bool:
+def _id_prefix(uid: str) -> str:
+    m = re.match(r"[a-z]+", uid)
+    return m.group(0) if m else ""
+
+
+def conflicting_system_ids(a: RecordEvidence, b: RecordEvidence) -> bool:
+    """Different registration numbers from the same hospital system, with nothing strong in common."""
+    if not a.uhids or not b.uhids or (a.uhids & b.uhids) or (a.uhid_cores & b.uhid_cores):
+        return False
+    pa = {_id_prefix(u) for u in a.uhids} - {""}
+    pb = {_id_prefix(u) for u in b.uhids} - {""}
+    if not (pa & pb):
+        return False
+    strong = (a.aadhaars & b.aadhaars) or (a.abhas & b.abhas) or (a.pans & b.pans) or (a.emails & b.emails) \
+        or (a.ins_ids & b.ins_ids) or (a.dobs & b.dobs)
+    return not strong
+
+
+def strong_shared(a: RecordEvidence, b: RecordEvidence, shared_phones: set[str]) -> bool:
+    """A shared identifier that belongs to one person (family phones excluded)."""
+    if (a.aadhaars & b.aadhaars) or (a.abhas & b.abhas) or (a.pans & b.pans) or (a.emails & b.emails):
+        return True
+    if (a.ins_ids & b.ins_ids) or (a.uhids & b.uhids):
+        return True
+    return any(ph not in shared_phones for ph in (a.phones & b.phones))
+
+
+_GUARDIAN_TYPES = {"S/o", "D/o", "W/o", "C/O"}
+
+
+def rel_conflict(names_a: list[tuple[str, ...]], names_b: list[tuple[str, ...]]) -> bool:
+    """Relatives of the same role that are clearly different people.
+
+    Relatives are usually written as a given name alone ("W/o Salim" vs "W/o Dinesh"), so unlike patient
+    names a single-token mismatch is a conflict too. Initials ("R. K.") are undecidable, never a conflict."""
+    _, matched, conf = _name_pair_match(names_a, names_b)
+    if conf:
+        return True
+    if matched or not names_a or not names_b:
+        return False
+    toks = {t for n in names_a for t in n} | {t for n in names_b for t in n}
+    return bool(toks) and all(len(t) >= 3 for t in toks)
+
+
+def rel_types_comparable(ta: str | None, tb: str | None) -> bool:
+    """Same relation type, or a structured care-of (the guardian) against S/o, D/o or W/o."""
+    if not ta or not tb or ta == "*" or tb == "*":
+        return False
+    return ta == tb or ("C/O" in (ta, tb) and ta in _GUARDIAN_TYPES and tb in _GUARDIAN_TYPES)
+
+
+def independent_strong_ids(a: RecordEvidence, b: RecordEvidence, shared_phones: set[str]) -> int:
+    """How many independent single-person identifier types agree (family phones excluded)."""
+    n = sum(bool(x) for x in (
+        a.aadhaars & b.aadhaars, a.abhas & b.abhas, a.pans & b.pans, a.emails & b.emails,
+        a.ins_ids & b.ins_ids, a.uhids & b.uhids,
+    ))
+    if any(ph not in shared_phones for ph in (a.phones & b.phones)):
+        n += 1
+    return n
+
+
+def has_hard_veto(a: RecordEvidence, b: RecordEvidence, soft: bool = True) -> bool:
+    """Hard vetoes always apply. With soft=True also the error-prone ones (birth year, name or relative
+    spelling), which score_pair waives when two independent single-person identifiers agree."""
     if a.gender and b.gender and a.gender != b.gender:
+        return True
+    if conflicting_system_ids(a, b):
         return True
     if a.dobs and b.dobs and not (a.dobs & b.dobs):
         return True
@@ -123,13 +191,14 @@ def has_hard_veto(a: RecordEvidence, b: RecordEvidence) -> bool:
         return True
     if a.pans and b.pans and not (a.pans & b.pans):
         return True
+    if not soft:
+        return False
     if a.birth_years and b.birth_years:
         min_diff = min(abs(ya - yb) for ya in a.birth_years for yb in b.birth_years)
         if min_diff > 4:
             return True
-    if a.rel_names and b.rel_names and a.rel_type and b.rel_type and a.rel_type == b.rel_type:
-        _, _, rel_conf = _name_pair_match(a.rel_names, b.rel_names)
-        if rel_conf:
+    if a.rel_names and b.rel_names and rel_types_comparable(a.rel_type, b.rel_type):
+        if rel_conflict(a.rel_names, b.rel_names):
             return True
     _, _, name_conf = _name_pair_match(a.full_names, b.full_names)
     if name_conf:
@@ -147,7 +216,10 @@ def score_pair(
     if a.is_multi_patient_summary or b.is_multi_patient_summary:
         return -999.0
     if has_hard_veto(a, b):
-        return -999.0
+        # a corrupted age cell or a transliteration variant must not split records that agree on
+        # two independent single-person identifiers (e.g. exact UHID + personal phone)
+        if has_hard_veto(a, b, soft=False) or independent_strong_ids(a, b, shared_phones) < 2:
+            return -999.0
 
     score = 0.0
 

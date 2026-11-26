@@ -9,7 +9,7 @@ from typing import Any
 import regex as re
 
 from src.config import Policy
-from src.ingest.profiler import infer_role_from_header
+from src.ingest.profiler import infer_role_from_header, resolve_key_role
 from src.linkage.evidence import RecordEvidence
 from src.models import FileEntry
 from src.nlp.indic_norm import normalize_name_token, shadow_normalize
@@ -17,7 +17,7 @@ from src.nlp.medical_guard import MedicalGuard
 from src.security.keys import KeyRing
 
 _TEHSIL_INLINE_RE = re.compile(
-    r"(?i)(?:,?\s*\b(?:Tehsil|Tahsil|Taluka|Sub[\s-]?Dist(?:rict)?)\s*[:.\-]?\s*(\[NAME\]|[A-Z\u0900-\u097f][^\n,;.|]{1,28})"
+    r"(?i)(?:,?\s*\b(?:Tehsil|Tahsil|Taluka|Tal\.|Sub[\s-]?Dist(?:rict)?)\s*[:.\-]?\s*(\[NAME\]|[A-Z\u0900-\u097f][^\n,;.|]{1,28})"
     r"|तहसील\s*[:.\-]?\s*(\[NAME\]|[^\n,;.|]{1,28}))"
 )
 _AGE_REWRITE_RE = re.compile(
@@ -108,7 +108,7 @@ def _collect_tehsil_values(entries: list[FileEntry], rec_tehsils: dict[str, set[
                             if isinstance(v, (dict, list)):
                                 stack.append(v)
                             elif isinstance(v, str) and v.strip():
-                                role, _ = infer_role_from_header(str(k))
+                                role = resolve_key_role(entry, str(k))
                                 if role == "TEHSIL" or "tehsil" in str(k).lower():
                                     tehsils.add(v.strip())
                                     rec_tehsils[rec.record_uid].add(normalize_name_token(v))
@@ -282,24 +282,35 @@ def build_privacy_plan(
             plan.rec_pin_level[e.uid] = pin_mode
 
     plan.records_generalized = sum(
-        1 for ev in evs if ev.uid in plan.rec_age_band or plan.rec_pin_level.get(ev.uid) == "pin3"
+        1 for ev in evs
+        if ev.uid in plan.rec_age_band or ev.uid in plan.rec_suppress_tehsil or plan.rec_pin_level.get(ev.uid) in ("pin3", "suppress")
     )
-    plan.records_suppressed = sum(
-        1 for ev in evs if ev.uid in plan.rec_suppress_tehsil or plan.rec_pin_level.get(ev.uid) == "suppress"
-    )
+    plan.records_suppressed = 0  # quasi-identifier fields are generalised/blanked; whole records are never dropped
     return plan
 
 
+_AGE_NULLS = {"", "nan", "null", "none", "na", "n/a", "nil", "unknown", "-", "--", "?"}
+# "8 months", "3 days", "45 Y 3 M", "2 wks": an age written with units (never hex like 0x7fffffff)
+_AGE_UNIT = re.compile(r"(?i)^\d{1,3}\s*(?:months?|mons?|mths?|mo|m|days?|d|weeks?|wks?|w|yrs?|years?|y)\b"
+                       r"|(?:महीने|माह|दिन|सप्ताह|वर्ष)")
+
+
 def generalize_age_value(raw: str, age_band: str | None) -> str:
-    """Replace exact numeric age inside structured Age/age_sex cells with its truthful band."""
-    if not age_band:
-        return raw
+    """Replace exact numeric age inside structured Age/age_sex cells with its truthful band.
+
+    Fails closed: a value that cannot be turned into a truthful band (negative, > 120, integer-overflow
+    probes, free text) becomes [AGE] instead of passing through raw."""
     s = str(raw).strip()
     norm = shadow_normalize(s)
-    m = re.match(r"^-?(\d{1,3})([ \t]*(?:y?[ \t]*/[ \t]*[MF]|yrs?|years?|वर्ष|y)?)$", norm, re.I)
-    if m:
-        return f"{age_band}{m.group(2) or ''}"
-    return s
+    if norm.lower() in _AGE_NULLS:
+        return s
+    m = re.match(r"^(\d{1,3})([ \t]*(?:y?[ \t]*/[ \t]*[MF]|yrs?|years?|वर्ष|y)?)$", norm, re.I)
+    if m and int(m.group(1)) <= 120:
+        return f"{age_band}{m.group(2) or ''}" if age_band else "[AGE]"
+    if age_band and not norm.startswith("-") and not m and _AGE_UNIT.search(norm) \
+            and re.search(r"\d", norm) and not re.search(r"\d{4,}", norm):
+        return age_band  # "8 months", "45 Y 3 M": the record's truthful band
+    return "[AGE]"
 
 
 def scrub_tehsils_and_ages_in_text(

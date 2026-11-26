@@ -10,6 +10,12 @@ from src.models import FileEntry
 from src.security.keys import KeyRing
 
 _TEXT_EXTS = {".csv", ".tsv", ".json", ".jsonl", ".ndjson", ".txt", ".md", ".log", ".xml"}
+# File names carrying shell metacharacters, command substitution, traversal sequences or control
+# characters are an attack on whatever consumes the release: such a name is never re-emitted; the cleaned
+# file is exported under a keyed safe name instead (see maybe_rename_rel_path).
+_UNSAFE_NAME_RE = re.compile(r"[;`|<>$\x00-\x1f\x7f]|\.\.(?:[\\/_]|$)")
+# A free-text line longer than this is not a clinical note (buffer / ReDoS bombs): quarantined.
+_MAX_TEXT_LINE = 65536
 _MAGIC_QUARANTINE = (
     (b"%PDF", "unsupported_pdf"),
     (b"\xff\xd8\xff", "unsupported_image"),
@@ -19,6 +25,31 @@ _MAGIC_QUARANTINE = (
     (b"PK\x03\x04", "unsupported_archive"),
     (b"SQLite format 3", "unsupported_binary"),
 )
+
+
+def _sparse_nul_text(raw: bytes) -> str | None:
+    """A few NUL bytes injected into otherwise valid UTF-8/cp1252 text (<=0.5% of bytes).
+
+    The NULs become spaces so neighbouring values ("Name\x00Phone") are still detected, instead of
+    quarantining a whole valid export. Mostly-NUL files stay quarantined."""
+    nul = raw.count(b"\x00")
+    if not nul or nul * 200 > len(raw):
+        return None
+    body = raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw
+    body = body.replace(b"\x00", b" ")
+    if not body.strip():
+        return None
+    try:
+        return body.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        pass
+    try:
+        text = body.decode("cp1252", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    if any(ord(ch) < 32 and ch not in "\r\n\t" for ch in text):
+        return None
+    return text
 
 
 def decode_strict(raw: bytes) -> tuple[str | None, str | None]:
@@ -34,7 +65,8 @@ def decode_strict(raw: bytes) -> tuple[str | None, str | None]:
         try:
             text = raw[3:].decode("utf-8", errors="strict")
             if "\x00" in text:
-                return None, "corrupt_binary_bytes"
+                sparse = _sparse_nul_text(raw)
+                return (sparse, None) if sparse is not None else (None, "corrupt_binary_bytes")
             return text, None
         except UnicodeDecodeError:
             return None, "undecodable_text"
@@ -61,6 +93,9 @@ def decode_strict(raw: bytes) -> tuple[str | None, str | None]:
                     return text, None
             except UnicodeDecodeError:
                 pass
+        sparse = _sparse_nul_text(raw)
+        if sparse is not None:
+            return sparse, None
         return None, "corrupt_binary_bytes"
 
     # Reject UTF-16 BOM markers appearing mid-stream inside corrupt text
@@ -165,13 +200,16 @@ def scan_input_tree(inp: Path) -> list[tuple[Path, str, FileEntry]]:
             continue
 
         ftype = sniff_format(ext, text)
+        if ftype == "text" and max((len(line) for line in text.splitlines()), default=0) > _MAX_TEXT_LINE:
+            ftype = "unsupported"
+            err = "line_too_long"
         if ftype == "unsupported":
             entry = FileEntry(
                 input_sha256=sha,
                 rel_input_path=rel,
                 rel_output_path=None,
                 status="quarantined",
-                reason="unsupported_format",
+                reason=err or "unsupported_format",
             )
             items.append((path, rel, entry))
             continue
@@ -212,9 +250,10 @@ def maybe_rename_rel_path(
     ext = p.suffix
     parent = p.parent.as_posix()
 
+    unsafe = bool(_UNSAFE_NAME_RE.search(p.name)) or any(_UNSAFE_NAME_RE.search(part) for part in Path(rel).parts[:-1])
     has_id = bool(_FNAME_ID_RE.search(stem))
     has_text_pii = has_pii_fn(re.sub(r"[_]+", " ", stem))
-    if has_id or has_text_pii:
+    if unsafe or has_id or has_text_pii:
         prefix = "doc"
         low = stem.lower()
         for cand in ("discharge", "report", "nursing", "rx", "opd", "lab"):
