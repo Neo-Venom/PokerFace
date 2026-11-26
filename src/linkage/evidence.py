@@ -15,9 +15,30 @@ from src.nlp.pii_ner import extract_context_name_spans, split_safe_chunks
 from src.nlp.pii_regex import extract_regex_spans
 
 _AGE_NUM_RE = re.compile(r"(?i)(?:age|आयु|उम्र)?\s*[:\-]?\s*(\d{1,3})\s*(?:yrs?|years?|वर्ष|y)?(?:\s*/\s*([MF]))?\b")
+# Structured sex/gender cells ("F", "Male", "महिला").
 _GENDER_F_RE = re.compile(r"(?i)\b(?:f|female|महिला)\b|/\s*f\b|\b(?:w/o|d/o|didi|behenji|amma)\b")
 _GENDER_M_RE = re.compile(r"(?i)\b(?:m|male|पुरुष)\b|/\s*m\b|\b(?:s/o|sahab|saab|bhaiya|papa|babu)\b")
-_REL_TYPE_RE = re.compile(r"(?i)\b(S/o|D/o|W/o)\b|(पुत्र|पुत्री|पत्नी|पिता|पति)")
+# Free text: only cues anchored to the record's subject. Honorifics ("Ramesh bhaiya", "sahab", "didi") usually
+# address an attendant or relative, and a bare "f"/"m" is too often "f/u" or "5 m", so neither sets the gender.
+_TXT_GENDER_RE = re.compile(
+    r"(?i)(?:\b(?:sex|gender)\b|लिंग)[ \t]*[:=\-/]?[ \t]*(?P<g1>male|female|m|f|पुरुष|महिला|स्त्री)(?![a-z])"
+    r"|\b\d{1,3}[ \t]*(?:y(?:rs?|ears?)?\.?|वर्ष)?[ \t]*/[ \t]*(?P<g2>m|f|male|female|पुरुष|महिला)(?![a-z])"
+    r"|\b\d{1,3}[ \t-]*(?:y(?:ea)?rs?|year)[ \t-]*old[ \t]+(?P<g3>man|woman|male|female|boy|girl|gentleman|lady)\b"
+    r"|(?P<g4>\b(?:w/o|d/o|s/o)\b|(?<![ऀ-ॿ])(?:पत्नी|पुत्री|पुत्र)(?![ऀ-ॿ]))"
+)
+_TXT_F = {"f", "female", "महिला", "स्त्री", "woman", "girl", "lady", "w/o", "d/o", "पत्नी", "पुत्री"}
+# Age cells written as floats/scientific notation/overflow ("1e309", "99999999999") are corrupt, not ages
+_BAD_AGE_CELL_RE = re.compile(r"\d\s*[eE][+-]?\d|\d{4,}|^\s*-")
+# Per-visit numbers (admission / IPD / OPD / bill / claim / Rx / lab sample): equal values link two records, but
+# two different ones are normal for one patient, so they never count as conflicting registration numbers.
+_EPISODE_ID_TOKENS = {
+    "ip", "ipd", "op", "opd", "adm", "admn", "admission", "visit", "vis", "enc", "encounter", "bill", "bl",
+    "inv", "invoice", "clm", "claim", "rx", "ref", "lab", "smp", "sample", "acc", "ord", "order", "epi",
+    "episode", "tkt", "ticket", "req", "dis", "dsc", "er", "cas", "emg", "casualty", "trx", "txn", "rcpt",
+}
+_EPISODE_HDR_RE = re.compile(r"(?i)ipd|opd|admission|adm[\s_.-]*no|visit|episode|encounter|bill|claim|invoice|receipt|sample|order")
+# Devanagari relation words as whole words only ("ब्रह्मपुत्र" is a river/hospital name, not "son of")
+_REL_TYPE_RE = re.compile(r"(?i)\b(S/o|D/o|W/o)\b|(?<![ऀ-ॿ])(पुत्री|पुत्र|पत्नी|पिता|पति)(?![ऀ-ॿ])")
 _DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b|\b(\d{1,2})[./-](\d{1,2})[./-]((?:19|20)\d{2})\b")
 _FNAME_SPLIT_RE = re.compile(r"[_\s]+")
 _NON_PII_JSON_PARENTS = {"facility", "organization", "lab", "hospital", "doctor", "practitioner", "test", "rx", "diagnosis", "vitals", "panels", "results"}
@@ -56,6 +77,13 @@ class RecordEvidence:
     pins: set[str] = field(default_factory=set)
     hospitals: set[str] = field(default_factory=set)
     diagnoses: set[str] = field(default_factory=set)
+    episode_ids: set[str] = field(default_factory=set)   # subset of uhids that are per-visit numbers
+    translit_tokens: set[str] = field(default_factory=set)  # name tokens romanised from Devanagari
+
+
+def is_episode_id(raw: str) -> bool:
+    """'KRM/IP/2025/7743', 'ADM-25-3397', 'VZC-IP-10462', 'OPD/26/001' are visit numbers, not registrations."""
+    return any(p.lower() in _EPISODE_ID_TOKENS for p in re.findall(r"[A-Za-z]+", shadow_normalize(raw)))
 
 
 def _norm_id_str(s: str) -> str:
@@ -84,10 +112,31 @@ def _parse_date_token(tok: str, dmy: bool = True) -> dt.date | None:
         return None
 
 
+_REL_MARKER_RE = re.compile(r"(?i)(?<![a-z])(?:s|d|w|c|h)[ \t]*/[ \t]*o(?![a-z])\.?[ \t]*[:\-]?")
+_SURNAME_FIRST_RE = re.compile(r"^\s*([^,;]+?)\s*,\s*([^,;]+?)\s*$")
+_HAS_DEVA_RE = re.compile(r"[ऀ-ॿ]")
+
+
+def _reorder_surname_first(raw: str) -> str:
+    """'Iyer, Rajesh' / 'SOREN, Govri' -> 'Rajesh Iyer' (registry exports often write the surname first)."""
+    m = _SURNAME_FIRST_RE.match(raw)
+    if not m or _REL_MARKER_RE.search(raw):
+        return raw
+    left, right = m.group(1), m.group(2)
+    if len(name_tokens(left)) == 1 and 1 <= len(name_tokens(right)) <= 3:
+        return f"{right} {left}"
+    return raw
+
+
 def _add_name_evidence(ev: RecordEvidence, raw: str, is_relative: bool = False) -> None:
+    raw = _reorder_surname_first(_REL_MARKER_RE.sub(" ", raw) if is_relative else raw)
     toks = name_tokens(raw)
-    if not toks:
+    if not toks or all(len(t) == 1 for t in toks) and (is_relative or len(toks) > 1):
         return
+    if _HAS_DEVA_RE.search(raw):
+        for part in re.split(r"[\s_/,.-]+", raw):
+            if _HAS_DEVA_RE.search(part):
+                ev.translit_tokens.update(name_tokens(part))
     if is_relative:
         ev.rel_names.append(tuple(toks))
         for t in toks:
@@ -114,7 +163,7 @@ _HIST_AFTER_RE = re.compile(r"(?i)^\s*(?:back|ago|later|earlier|prior|duration|s
 _LOCATION_WORD_RE = re.compile(r"(?i)\b(?:school|schul|tehsil|tahsil|block|ward|mohalla|colony|nagar|marg|road|lane|street|hospital|clinic|near|khurd|kalan|gram|village)\b")
 
 
-def _add_id_evidence(ev: RecordEvidence, kind: str, val: str) -> None:
+def _add_id_evidence(ev: RecordEvidence, kind: str, val: str, episode: bool = False) -> None:
     s = shadow_normalize(val).strip()
     if not s:
         return
@@ -144,12 +193,15 @@ def _add_id_evidence(ev: RecordEvidence, kind: str, val: str) -> None:
         nid = _norm_id_str(s)
         if len(nid) >= 4 and len(digits) >= 3:
             ev.uhids.add(nid)
+            if episode or is_episode_id(s):
+                ev.episode_ids.add(nid)
             dc = _digit_core(s)
             if len(dc) >= 5:
                 ev.uhid_cores.add(dc)
 
 
 def _detect_gender(text: str) -> str | None:
+    """Gender from a structured sex/gender cell."""
     f = bool(_GENDER_F_RE.search(text))
     m = bool(_GENDER_M_RE.search(text))
     if f and not m:
@@ -157,6 +209,22 @@ def _detect_gender(text: str) -> str | None:
     if m and not f:
         return "M"
     return None
+
+
+def _detect_gender_text(text: str) -> str | None:
+    """Gender from free text, using only cues that describe the record's subject (labels, '45 Y / F',
+    'a 45-year-old woman', 'W/o' / 'D/o' / 'S/o'). Contradictory cues give None."""
+    found: set[str] = set()
+    for m in _TXT_GENDER_RE.finditer(text):
+        g = (m.group("g1") or m.group("g2") or m.group("g3") or m.group("g4") or "").lower()
+        found.add("F" if g in _TXT_F else "M")
+        if len(found) > 1:
+            return None
+    return next(iter(found)) if found else None
+
+
+def _age_cell_ok(val: str) -> bool:
+    return not _BAD_AGE_CELL_RE.search(shadow_normalize(str(val)))
 
 
 _EVIDENCE_PRIO = {
@@ -263,7 +331,7 @@ def _extract_from_text_blob(ev: RecordEvidence, text: str, guard: MedicalGuard, 
             ev.rel_type = "W/o"
 
     if not ev.gender:
-        ev.gender = _detect_gender(text)
+        ev.gender = _detect_gender_text(text)
 
     norm_txt = shadow_normalize(text)
     norm_prot = guard.protected_spans(norm_txt)
@@ -293,6 +361,21 @@ def _extract_from_text_blob(ev: RecordEvidence, text: str, guard: MedicalGuard, 
     for g in KNOWN_GEO_DISTRICTS_STATES:
         if len(g) >= 5 and re.search(rf"\b{re.escape(g)}\b", text.lower()):
             ev.districts.add(g.replace(" ", ""))
+
+
+def _fhir_human_name(nm: Any) -> str:
+    """FHIR HumanName: .text, else given[] + family."""
+    if isinstance(nm, list):
+        nm = next((x for x in nm if isinstance(x, dict)), None)
+    if not isinstance(nm, dict):
+        return ""
+    if isinstance(nm.get("text"), str) and nm["text"].strip():
+        return nm["text"]
+    given = nm.get("given")
+    parts = [g for g in (given if isinstance(given, list) else [given]) if isinstance(g, str)]
+    if isinstance(nm.get("family"), str):
+        parts.append(nm["family"])
+    return " ".join(p.strip() for p in parts if p.strip())
 
 
 def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[RecordEvidence]:
@@ -338,7 +421,7 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
                             ev.rel_type = (rm.group(1) or "").capitalize() or ev.rel_type
                         elif re.match(r"(?i)^\s*c/o\b", val) and not ev.rel_type:
                             ev.rel_type = "C/O"          # structured care-of column: the guardian
-                        cleaned_rel = re.sub(r"(?i)^(?:S/o|D/o|W/o|C/O|son of|daughter of|wife of)\s+", "", val).strip()
+                        cleaned_rel = re.sub(r"(?i)^\s*(?:son|daughter|wife|husband|care)\s+of\s+", "", _REL_MARKER_RE.sub(" ", val)).strip()
                         cleaned_rel = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", cleaned_rel)          # "(PAN: ...)"
                         cleaned_rel = re.sub(r"(?i)^(?:late|lt\.?|स्व\.?)\s+", "", cleaned_rel.strip()).strip()
                         _add_name_evidence(ev, cleaned_rel, is_relative=True)
@@ -354,7 +437,7 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
                         if role == "AADHAAR" and "x" in val.lower():
                             _add_id_evidence(ev, "AADHAAR_MASKED", val)
                         else:
-                            _add_id_evidence(ev, role, val)
+                            _add_id_evidence(ev, role, val, episode=(role == "MRN" and bool(_EPISODE_HDR_RE.search(hdr))))
                     elif role == "GENDER":
                         ev.gender = _detect_gender(val)
                     elif role == "DOB":
@@ -363,7 +446,8 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
                             ev.dobs.add(d)
                             ev.birth_years.add(d.year)
                     elif role == "AGE":
-                        _extract_from_text_blob(ev, f"Age: {val}", guard, entry.date_order_hint == "dmy")
+                        if _age_cell_ok(val):
+                            _extract_from_text_blob(ev, f"Age: {val}", guard, entry.date_order_hint == "dmy")
                     elif role == "VILLAGE":
                         vn = normalize_name_token(val)
                         if vn:
@@ -403,8 +487,9 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
                 rt = res.get("resourceType", "")
                 if rt == "Patient":
                     for nm in res.get("name") or []:
-                        if isinstance(nm, dict) and isinstance(nm.get("text"), str):
-                            _add_name_evidence(ev, nm["text"], is_relative=False)
+                        nm_txt = _fhir_human_name(nm)
+                        if nm_txt:
+                            _add_name_evidence(ev, nm_txt, is_relative=False)
                     for ident in res.get("identifier") or []:
                         if isinstance(ident, dict) and isinstance(ident.get("value"), str):
                             sys_u = str(ident.get("system", "")).lower()
@@ -434,8 +519,8 @@ def extract_all_evidence(entries: list[FileEntry], guard: MedicalGuard) -> list[
                                 ev.pins.add(addr["postalCode"][:6])
                     for ct in res.get("contact") or []:
                         if isinstance(ct, dict):
-                            nm = (ct.get("name") or {}).get("text")
-                            if isinstance(nm, str):
+                            nm = _fhir_human_name(ct.get("name"))
+                            if nm:
                                 _add_name_evidence(ev, nm, is_relative=True)
                 elif rt == "Encounter":
                     per = res.get("period") or {}
@@ -591,7 +676,7 @@ def _extract_json_node_evidence(ev: RecordEvidence, node: Any, guard: MedicalGua
                         if kl in ("visit_id", "id") and "opd/" in sv.lower():
                             continue
                         eff_role = "AADHAAR" if kl == "aadhar_no" else ("PHONE" if kl == "callback" else ("MRN" if kl in ("patient_ref", "hospital_uhid", "uhid") else (role or "MRN")))
-                        _add_id_evidence(ev, eff_role, sv)
+                        _add_id_evidence(ev, eff_role, sv, episode=(eff_role == "MRN" and bool(_EPISODE_HDR_RE.search(kl))))
                     elif role == "GENDER" or kl in ("sex", "gender"):
                         ev.gender = _detect_gender(sv)
                     elif role == "DOB" or kl == "dob":
@@ -600,7 +685,8 @@ def _extract_json_node_evidence(ev: RecordEvidence, node: Any, guard: MedicalGua
                             ev.dobs.add(d)
                             ev.birth_years.add(d.year)
                     elif role == "AGE" or kl in ("age", "age_sex"):
-                        _extract_from_text_blob(ev, f"Age: {sv}", guard, dmy)
+                        if _age_cell_ok(sv):
+                            _extract_from_text_blob(ev, f"Age: {sv}", guard, dmy)
                     elif role == "VILLAGE" or (kl in ("village", "city") and pk not in _NON_PII_JSON_PARENTS):
                         ev.villages.add(normalize_name_token(sv))
                     elif role == "DISTRICT":

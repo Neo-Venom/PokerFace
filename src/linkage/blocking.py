@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from src.linkage.evidence import RecordEvidence
+from src.nlp.indic_norm import phonetic_skeleton
 
 
 def generate_candidate_pairs(evs: list[RecordEvidence]) -> list[tuple[int, int]]:
@@ -46,6 +47,14 @@ def generate_candidate_pairs(evs: list[RecordEvidence]) -> list[tuple[int, int]]
                 blocks[("GSK_RSK", gsk, rsk)].append(idx)
             for dist in ev.districts:
                 blocks[("GSK_DIST", gsk, dist)].append(idx)
+        if ev.rel_skels:
+            # Any name part (or initial) + a relative's name: "Gupta, C/O Prakash" / "A., C/O Salim" against
+            # "Sanjay Gupta S/o Prakash" (a lone token is filed as a given name, an initial has no skeleton)
+            parts = {p for fn in ev.full_names for t in fn if t
+                     for p in (("I:" + t[:1]), (phonetic_skeleton(t) if len(t) > 1 else "")) if p}
+            for part in parts:
+                for rsk in ev.rel_skels:
+                    blocks[("TOK_RSK", part, rsk)].append(idx)
         for ssk in ev.surname_skels:
             blocks[("SSK_SEX", ssk, g_tag)].append(idx)
             for rsk in ev.rel_skels:   # "N. Kulkarni, C/O Rajan": initial + surname + relative, gender unknown
@@ -56,7 +65,7 @@ def generate_candidate_pairs(evs: list[RecordEvidence]) -> list[tuple[int, int]]
     pairs: set[tuple[int, int]] = set()
     for bkey, idxs in blocks.items():
         # Guard against overly huge generic buckets (e.g. generic surname/token)
-        if len(idxs) > 120 and bkey[0] in ("GSK_ONLY", "SSK_SEX"):
+        if len(idxs) > 120 and bkey[0] in ("GSK_ONLY", "SSK_SEX", "TOK_RSK"):
             continue
         for i_pos in range(len(idxs)):
             a = idxs[i_pos]
