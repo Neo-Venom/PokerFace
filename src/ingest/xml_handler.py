@@ -15,7 +15,7 @@ def parse_xml_entry(entry: FileEntry) -> None:
     text = entry.text_decoded or ""
     try:
         DET.fromstring(text.encode("utf-8"))
-    except DET.ParseError as exc:
+    except Exception as exc:
         entry.status = "quarantined"
         entry.rel_output_path = None
         entry.reason = type(exc).__name__

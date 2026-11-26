@@ -167,10 +167,15 @@ class TestRakshaCore(unittest.TestCase):
                 encoding="utf-8",
             )
             (inp / "scan.pdf").write_bytes(b"%PDF-1.4 binary payload")
+            (inp / "xxe.xml").write_text(
+                '<?xml version="1.0"?><!DOCTYPE bomb [<!ENTITY a "lol"><!ENTITY b "&a;&a;">]><r>&b;</r>',
+                encoding="utf-8",
+            )
             os.environ["RAKSHA_SECRET"] = "unit-test-secret-key"
             rc = run_pipeline(inp, out, Policy())
             self.assertEqual(rc, 0)
             self.assertFalse((out / "sanitized" / "scan.pdf").exists())
+            self.assertFalse((out / "sanitized" / "xxe.xml").exists())
             recs = (out / "records.jsonl").read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(recs), 2)
             import json
