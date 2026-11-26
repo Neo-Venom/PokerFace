@@ -14,7 +14,8 @@ from typing import Any
 from src.config import Policy, load_policy
 from src.ingest.csv_handler import parse_csv_entry, serialize_csv_entry
 from src.ingest.fhir_handler import sanitize_fhir_bundle
-from src.ingest.json_handler import parse_json_entry, transform_json_iterative
+from src.ingest.hidden import scrub_hidden
+from src.ingest.json_handler import parse_json_entry, serialize_json_entry, transform_json_iterative
 from src.ingest.profiler import infer_role_from_header, refine_entry_roles, resolve_key_role
 from src.ingest.router import maybe_rename_rel_path, scan_input_tree
 from src.ingest.text_handler import parse_text_entry, rewrite_text_preserving_lines
@@ -39,6 +40,19 @@ _PIN_6_RE = re.compile(r"\b([1-8]\d{5})\b")
 _PIN3_MASKED_RE = re.compile(r"(?<!\d)([1-8]\d{2})\*{3}(?!\d)")
 _ENCOUNTER_KEY_WORDS = ("visit", "encounter", "claim", "bill", "sample", "accession", "invoice", "receipt", "token",
                         "slip", "order", "ticket", "trip", "batch", "lot")
+_JOINED_WORDS_RE = re.compile(r"(?<=[^\W\d_])[_.]+(?=[^\W\d_])")
+# JSON objects that hold a relative / companion of the patient (their names are RELATIVE_NAME, never the patient)
+_REL_PARENT_KEYS = frozenset({
+    "guardian", "relative", "relatives", "kin", "nextofkin", "spouse", "father", "mother", "husband", "wife",
+    "attendant", "attendants", "relatedperson", "parent", "parents", "son", "daughter", "brother", "sister",
+    "emergencycontact", "informant", "nominee", "caretaker", "caregiver", "escort", "bystander",
+})
+
+
+def _is_relative_path(path_lower: str) -> bool:
+    return any(re.sub(r"[^a-z]", "", seg) in _REL_PARENT_KEYS for seg in path_lower.split("/")[:-1])
+
+
 _NON_PII_JSON_PARENTS = {"facility", "organization", "lab", "hospital", "doctor", "practitioner", "test", "rx", "diagnosis", "vitals", "panels", "results"}
 
 
@@ -82,6 +96,23 @@ def peak_rss_mb() -> float:
             except Exception:
                 pass
         return 0.0
+
+
+def _fail_closed(entry: FileEntry, reason: str) -> None:
+    """A stage that cannot process one file quarantines that file (never a half-processed copy); the run goes on."""
+    entry.status = "quarantined"
+    entry.rel_output_path = None
+    entry.reason = reason
+
+
+def _each_entry(entries: list[FileEntry], fn: Any, reason: str) -> None:
+    for entry in entries:
+        if entry.status != "sanitized":
+            continue
+        try:
+            fn(entry)
+        except Exception:
+            _fail_closed(entry, reason)
 
 
 def _parse_entry(entry: FileEntry, policy: Policy) -> None:
@@ -275,7 +306,7 @@ def _rewrite_entry(
         if entry.file_type in ("csv", "tsv"):
             return serialize_csv_entry(entry, scrub_header_fn=lambda h: h, rewrite_row_fn=lambda _i, r: r)
         if entry.file_type in ("json", "fhir"):
-            return json.dumps(entry.parsed_data, ensure_ascii=False, indent=2) + "\n"
+            return serialize_json_entry(entry, entry.parsed_data)
         return str(entry.parsed_data)
 
     dmy = entry.date_order_hint == "dmy"
@@ -292,6 +323,16 @@ def _rewrite_entry(
         return txt
 
     def _scrub_str(
+        text: str,
+        psn: str | None = None,
+        inject_psn: bool = False,
+        rec_uid: str | None = None,
+        is_address: bool = False,
+    ) -> str:
+        # base64 / gzip / hex payloads (whole value or embedded) are decoded, scrubbed and re-encoded
+        return scrub_hidden(text, lambda t: _scrub_plain_str(t, psn, inject_psn, rec_uid, is_address))
+
+    def _scrub_plain_str(
         text: str,
         psn: str | None = None,
         inject_psn: bool = False,
@@ -510,6 +551,11 @@ def _rewrite_entry(
                 entity_counts["MRN"] += 1
                 return mapped
             cleaned, spans = resolve_and_scrub(k, guard, harvester)
+            spaced = _JOINED_WORDS_RE.sub(" ", k)
+            if spaced != k and " " not in k and harvester.sweep_spans(spaced):
+                # "patient_Mohammad_Arif_meta": the name is only seen whole once the '_' joints are spaces
+                cleaned, spans = resolve_and_scrub(spaced, guard, harvester)
+                cleaned = cleaned.replace(" ", "_")
             for sp in spans:
                 entity_counts[sp.kind] += 1
             return cleaned
@@ -566,7 +612,7 @@ def _rewrite_entry(
                 psn_placed_for_ptr.add(ptr_key)
                 return r_psn
             if kl in ("first", "last", "local", "name", "full_name") and not any(x in pl for x in ("/facility/", "/lab", "/panels/", "/diagnosis/")):
-                if "/guardian/" in pl:
+                if _is_relative_path(pl):
                     entity_counts["RELATIVE_NAME"] += 1
                     return "[RELATIVE]"
                 if any(x in pl for x in ("/raised_by/", "/caller/", "/reporter/", "/submitted_by/", "/requested_by/", "/contact_person/")):
@@ -627,7 +673,7 @@ def _rewrite_entry(
             return _scrub_str(val, rec_uid=r_uid)
 
         cleaned = transform_json_iterative(entry.parsed_data, scrub_key_fn=_scrub_key, scrub_val_fn=_scrub_val)
-        return json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n"
+        return serialize_json_entry(entry, cleaned)
 
     if entry.file_type == "xml":
         rec = entry.records[0] if entry.records else None
@@ -680,29 +726,33 @@ def run_pipeline(input_dir: Path, output_dir: Path, policy: Policy | None = None
     san_dir.mkdir(parents=True, exist_ok=True)
 
     scanned = scan_input_tree(input_dir)
-    entries: list[FileEntry] = []
-    for _path, _rel, entry in scanned:
-        _parse_entry(entry, pol)
-        entries.append(entry)
+    entries: list[FileEntry] = [entry for _path, _rel, entry in scanned]
+    _each_entry(entries, lambda e: _parse_entry(e, pol), "parse_error")
 
     # Pass 1: Learn runtime clinical lexicon & harvest PII registry
     guard = MedicalGuard()
-    guard.learn_from_entries(entries)
-    for entry in entries:
-        if entry.status == "sanitized" and not entry.is_clean_doc:
-            refine_entry_roles(entry, guard)
+    _each_entry(entries, lambda e: guard.learn_from_entries([e]), "parse_error")
+    _each_entry([e for e in entries if not e.is_clean_doc], lambda e: refine_entry_roles(e, guard), "parse_error")
 
     harvester = PiiHarvester(guard)
-    for entry in entries:
-        _harvest_entry(entry, guard, harvester)
+    _each_entry(entries, lambda e: _harvest_entry(e, guard, harvester), "parse_error")
     harvester.compile()
-    for entry in entries:
-        if entry.status == "sanitized" and not entry.is_clean_doc:
-            entry.multi_patient = _looks_multi_patient(entry, guard, harvester)
+
+    def _set_multi(e: FileEntry) -> None:
+        e.multi_patient = _looks_multi_patient(e, guard, harvester)
+    _each_entry([e for e in entries if not e.is_clean_doc], _set_multi, "parse_error")
 
     # Global Cross-Script Record Linkage (Phase 4)
-    evs = extract_all_evidence(entries, guard)
-    link_and_assign_pseudonyms(evs, keyring, pol)
+    try:
+        evs = extract_all_evidence(entries, guard)
+    except Exception:  # find and quarantine the file(s) the extractor cannot read, then link the rest
+        _each_entry(entries, lambda e: extract_all_evidence([e], guard), "parse_error")
+        evs = extract_all_evidence(entries, guard)
+    try:
+        link_and_assign_pseudonyms(evs, keyring, pol)
+    except Exception:  # fail safe: an unlinked record is never a false merge
+        for ev in evs:
+            ev.record.pseudonym = None
 
     psn_by_id: dict[str, set[str]] = {}
     psn_by_name: dict[str, set[str]] = {}
@@ -720,7 +770,10 @@ def run_pipeline(input_dir: Path, output_dir: Path, policy: Policy | None = None
                 psn_by_name.setdefault(nn, set()).add(psn)
 
     # Adversarial Privacy Layer (Phase 5: per-patient date shifts + k-anonymity plan)
-    privacy_plan = build_privacy_plan(entries, evs, keyring, pol)
+    try:
+        privacy_plan = build_privacy_plan(entries, evs, keyring, pol)
+    except Exception:  # fail closed: no per-record bands -> structured ages become [AGE], tehsils/PINs suppressed
+        privacy_plan = PrivacyPlan()
     raw_path_by_sha: dict[str, Path] = {e.input_sha256: p for p, _r, e in scanned}
     vault = EncryptedVault(keyring.k_vault) if pol.encrypt_quarantine_archive else None
 
@@ -734,12 +787,15 @@ def run_pipeline(input_dir: Path, output_dir: Path, policy: Policy | None = None
             _, spans = resolve_and_scrub(stem_text, guard, harvester)
             return bool(spans)
 
-        new_rel, renamed = maybe_rename_rel_path(
-            entry.rel_input_path,
-            entry.input_sha256,
-            keyring,
-            has_pii_fn=_fname_has_pii,
-        )
+        try:
+            new_rel, renamed = maybe_rename_rel_path(
+                entry.rel_input_path,
+                entry.input_sha256,
+                keyring,
+                has_pii_fn=_fname_has_pii,
+            )
+        except Exception:  # cannot vet the name: never re-emit it
+            new_rel, renamed = maybe_rename_rel_path(entry.rel_input_path, entry.input_sha256, keyring, lambda _s: True)
         if new_rel in used_out_paths:
             p = Path(new_rel)
             new_rel = (p.parent / f"{p.stem}_{keyring.file_tag(entry.input_sha256, 4)}{p.suffix}").as_posix()
@@ -757,9 +813,18 @@ def run_pipeline(input_dir: Path, output_dir: Path, policy: Policy | None = None
         if entry.status == "sanitized" and entry.rel_output_path:
             out_rel = entry.rel_output_path
             dest = san_dir / out_rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            serialized = _rewrite_entry(entry, guard, harvester, entity_counts, privacy_plan, psn_by_id=psn_by_id, psn_by_name=psn_by_name)
-            dest.write_text(serialized, encoding="utf-8", newline="")
+            try:
+                file_counts: Counter[str] = Counter()
+                serialized = _rewrite_entry(entry, guard, harvester, file_counts, privacy_plan, psn_by_id=psn_by_id, psn_by_name=psn_by_name)
+                payload = serialized.encode("utf-8")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(payload)
+                entity_counts.update(file_counts)
+            except Exception:
+                dest.unlink(missing_ok=True)
+                _fail_closed(entry, "rewrite_error")
+        if entry.status == "sanitized" and entry.rel_output_path:
+            out_rel = entry.rel_output_path
             files_report.append(
                 {
                     "input_sha256": entry.input_sha256,

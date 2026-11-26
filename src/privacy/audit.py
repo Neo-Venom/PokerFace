@@ -10,7 +10,8 @@ from typing import Any
 
 import regex as re
 
-from src.ingest.json_handler import sanitize_base64_value
+from src.ingest.hidden import binary_text_runs, decoded_views, scrub_hidden
+from src.ingest.json_handler import is_json_lines, serialize_json_entry, transform_json_iterative
 from src.models import FileEntry
 from src.nlp.indic_norm import deobfuscate_unicode, norm_match_text, shadow_normalize, unquote_percent_text
 from src.nlp.medical_guard import MedicalGuard
@@ -36,18 +37,24 @@ def _mask_uuids(text: str) -> str:
 
 
 def _decode_b64_snippets(text: str, depth: int = 0) -> str:
+    """`text` plus every hidden reading of it: %XX, HTML entities, \\uXXXX, '_'-joined words, BiDi runs, and
+    base64 / gzip+base64 / hex payloads (nested), with the readable runs of binary blobs."""
     extra: list[str] = []
     if depth == 0:
         unq = unquote_percent_text(text)
         if unq != text:
             extra.append(unq)
+        extra.extend(decoded_views(text))
     for m in _B64_RE.finditer(text):
         tok = m.group(0)
         try:
             raw = base64.b64decode(tok + "=" * (-len(tok) % 4))
             if raw.startswith(b"\x1f\x8b"):
                 raw = gzip.decompress(raw)
-            dec = raw.decode("utf-8", errors="ignore")
+            try:
+                dec = raw.decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                dec = binary_text_runs(raw)
             if dec and not dec.startswith("[ATTACHMENT_REDACTED]"):
                 extra.append(dec)
                 if depth < 2 and _B64_RE.search(dec):
@@ -88,34 +95,33 @@ def _scrub_json_tree_fallback(
     key_name: str = "",
     preserve_struct: bool = False,
 ) -> Any:
-    if isinstance(obj, dict):
-        is_struct = preserve_struct or obj.get("resourceType") in (
-            "Bundle",
-            "Patient",
-            "Encounter",
-            "Observation",
-            "Condition",
-            "Procedure",
-            "MedicationRequest",
-            "DiagnosticReport",
-            "DocumentReference",
-        )
-        return {
-            (str(k) if (is_struct and str(k) in _FHIR_STRUCT_KEYS) else resolve_and_scrub(str(k), guard, harvester)[0]): _scrub_json_tree_fallback(
-                v, guard, harvester, key_name=str(k), preserve_struct=is_struct
-            )
-            for k, v in obj.items()
-        }
-    if isinstance(obj, list):
-        return [_scrub_json_tree_fallback(x, guard, harvester, key_name=key_name, preserve_struct=preserve_struct) for x in obj]
-    if isinstance(obj, str):
-        st = obj.strip()
-        if _UUID_RE.fullmatch(st) or (preserve_struct and key_name in _FHIR_STRUCT_KEYS):
-            return obj
-        if _B64_RE.fullmatch(st):
-            return sanitize_base64_value(st, lambda s: resolve_and_scrub(s, guard, harvester)[0])
-        return resolve_and_scrub(unquote_percent_text(obj), guard, harvester)[0]
-    return obj
+    """Second-chance scrub of a whole JSON tree (iterative: safe at any nesting depth). FHIR structure keys and
+    their values, and UUIDs, are kept so the Bundle stays valid."""
+
+    def _plain(s: str) -> str:
+        return resolve_and_scrub(unquote_percent_text(s), guard, harvester)[0]
+
+    def _key(k: str) -> str:
+        return k if (preserve_struct and k in _FHIR_STRUCT_KEYS) else resolve_and_scrub(k, guard, harvester)[0]
+
+    def _val(_path: str, v: Any, key: str) -> Any:
+        if not isinstance(v, str):
+            return v
+        if _UUID_RE.fullmatch(v.strip()) or (preserve_struct and key in _FHIR_STRUCT_KEYS):
+            return v
+        return scrub_hidden(v, _plain)
+
+    return transform_json_iterative(obj, scrub_key_fn=_key, scrub_val_fn=_val)
+
+
+def _parse_json_output(txt: str, jsonl: bool) -> Any:
+    """Re-parse an exported JSON / JSON Lines file (raises ValueError when it is not valid)."""
+    def _no_const(name: str) -> Any:
+        raise ValueError(name)
+
+    if not jsonl:
+        return json.loads(txt, parse_constant=_no_const)
+    return [json.loads(ln, parse_constant=_no_const) for ln in txt.splitlines() if ln.strip()]
 
 
 def run_egress_audit(
@@ -189,8 +195,8 @@ def run_egress_audit(
         json_broken = False
         if entry and entry.file_type in ("json", "fhir"):
             try:
-                json.loads(txt)
-            except ValueError:
+                _parse_json_output(txt, is_json_lines(entry))
+            except (ValueError, RecursionError):
                 json_broken = True
 
         if fname_dirty or json_broken or (secret_str and len(secret_str) >= 4 and secret_str in txt):
