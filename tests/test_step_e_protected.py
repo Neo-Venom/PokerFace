@@ -6,9 +6,9 @@ from raksha.detect.protected import ClinicalLexicon, build_clinical_lexicon, res
 
 def test_step_e_nursing_note_temp_and_paracetamol_preserved():
     txt = (
-        "NURSING NOTES - Ward 8 (Medicine), Bed 2 - ADM000161\n"
-        "01/13/2026 22:00 - Shahid sahab ka BP 117/82, pulse 106. Bukhar 103 F. Paracetamol 650 mg diya.\n"
-        "14:00 - Mohd. Shahid - K/C/O addison's disease. Attendant (S/o Zubair) informed about diet."
+        "NURSING NOTES - Ward 8 (Medicine), Bed 2 - PAT000991\n"
+        "01/13/2026 22:00 - Tanveer sahab ka BP 117/82, pulse 106. Bukhar 103 F. Paracetamol 650 mg diya.\n"
+        "14:00 - Mohd. Tanveer - K/C/O addison's disease. Attendant (S/o Farhan) informed about diet."
     )
     lex = ClinicalLexicon()
     prot = lex.find_spans(txt)
@@ -21,9 +21,9 @@ def test_step_e_nursing_note_temp_and_paracetamol_preserved():
     assert "pulse 106" in out
     assert "addison's disease" in out
     assert "Ward 8 (Medicine)" in out
-    assert "Shahid" not in out
-    assert "Zubair" not in out
-    assert "ADM000161" not in out
+    assert "Tanveer" not in out
+    assert "Farhan" not in out
+    assert "PAT000991" not in out
 
 
 def test_step_e_formulary_lexicon_and_protected_overlap_wins():
@@ -32,7 +32,7 @@ def test_step_e_formulary_lexicon_and_protected_overlap_wins():
         ("clean/lab_reference_ranges.csv", "csv", [["test", "unit"], ["Platelet Count", "/uL"]]),
     ]
     lex = build_clinical_lexicon(parsed)
-    txt = "Dolo 650 BD x 5 days. Platelet Count 240124 /uL. Dr. Ramesh Srivastava reviewed."
+    txt = "Dolo 650 BD x 5 days. Platelet Count 240124 /uL. Dr. Vivek Menon reviewed."
     prot = lex.find_spans(txt)
     pii = detect_identifier_spans(txt) + detect_context_name_and_address_spans(txt, protected_spans=prot)
     out = redact_spans(txt, resolve_pii_vs_protected(pii, prot))

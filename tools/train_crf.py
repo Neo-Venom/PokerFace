@@ -14,10 +14,10 @@ sys.path.insert(0, str(ROOT))
 
 from raksha.detect.crf_model import MODEL_PATH, sent_to_features, tokenize_with_spans
 
-# Rare/canary-style synthetic names disjoint from standard Faker pools for OOV context testing
+# Rare/canary-style synthetic names disjoint from Faker pools and unseen in dev data
 _CANARY_POOLS = [
-    ("Zubin", "Khosravi"), ("Tashi", "Dorjee"), ("Maitreyi", "Senapati"), ("Kaveri", "Nambiar"),
-    ("Ilavenil", "Bhattacharya"), ("Tsering", "Wangmo"), ("Zorawar", "Qadri"), ("Prabhakar", "Deshmukh"),
+    ("Zubin", "Khosravi"), ("Tashi", "Dorjee"), ("Maitreyi", "Senapati"), ("Qvornak", "Zelenski"),
+    ("Vaelor", "Trenzok"), ("Kripan", "Narasimhan"), ("Srinivas", "Kulkarni"), ("Prabhakar", "Deshmukh"),
     ("Niharika", "Chattopadhyay"), ("Subramanian", "Iyer"), ("Devika", "Panicker"), ("Harshvardhan", "Rathore"),
 ]
 
@@ -95,8 +95,9 @@ def build_synthetic_dataset(patients: list[dict], rng: random.Random, samples_pe
 
         templates: list[tuple[str, list[tuple[str, str]]]] = [
             (f"Patient Name: {name}   Age/Sex: {rng.randint(18, 85)} Yrs/M", [(name, "PATIENT_NAME")]),
-            (f"Name: {name}   Reg No: JJH-{rng.randint(10000,99999)}", [(name, "PATIENT_NAME")]),
+            (f"Name: {name}   Reg No: HOSP-{rng.randint(10000,99999)}", [(name, "PATIENT_NAME")]),
             (f"Pt. {name} presented with C/O {comp}.", [(name, "PATIENT_NAME")]),
+            (f"Pt. {name} (MRN: HOSP-{rng.randint(10000,99999)}) referred for {comp}.", [(name, "PATIENT_NAME")]),
             (f"Beneficiary: {name} | Caretaker: {rel}", [(name, "PATIENT_NAME"), (rel, "RELATIVE_NAME")]),
             (f"Client Name: {name}, S/o {rel}", [(name, "PATIENT_NAME"), (rel, "RELATIVE_NAME")]),
             (f"S/o {rel}, Attendant: {rel}, Mob: 9876543210", [(rel, "RELATIVE_NAME")]),
@@ -109,7 +110,7 @@ def build_synthetic_dataset(patients: list[dict], rng: random.Random, samples_pe
             (f"Consent witnessed by {name}, phone 8010993510.", [(name, "PATIENT_NAME")]),
             (f"Sample received from {first}'s attendant (S/o {rel}).", [(first, "PATIENT_NAME"), (rel, "RELATIVE_NAME")]),
             (f"18:40 - {name} (attendant, bed 12), mob 9123456780", [(name, "RELATIVE_NAME")]),
-            (f"AMB-410,Sitapur,Lucknow,called by {name} 94054-71434", [(name, "PATIENT_NAME")]),
+            (f"AMB-410,North Town,South City,called by {name} 98111-22334", [(name, "PATIENT_NAME")]),
             (f"Address (attendant): C/O {rel}, Ward 4", [(rel, "RELATIVE_NAME")]),
             (f"मरीज़ का नाम: {dn}   आयु: 45 वर्ष", [(dn, "PATIENT_NAME")]),
             (f"नाम: {dn}   पिता का नाम: {dr}", [(dn, "PATIENT_NAME"), (dr, "RELATIVE_NAME")]),
@@ -118,10 +119,10 @@ def build_synthetic_dataset(patients: list[dict], rng: random.Random, samples_pe
             (f"Consultant: {doc} (MD Medicine). Reviewed by {doc}.", []),
             (f"OPD: C/O {comp}. K/C/O {dis}.", []),
             (f"1. Tab {drug} 1-0-1 x 5 days. Platelet Count 240124 /uL.", []),
-            (f"Referred by ASHA worker. {doc_hi} took evening round.", []),
+            (f"Referred by health worker. {doc_hi} took evening round.", []),
             (f"Ward 5 (Medicine) / Bed 12. Diagnosis: {dis}.", []),
-            ("City Multispeciality Hospital, Lucknow\nDISCHARGE SUMMARY", []),
-            ("Seva Sadan Charitable Trust, Sitapur\nडिस्चार्ज सारांश", []),
+            ("Metro Multispeciality Hospital, North Zone\nDISCHARGE SUMMARY", []),
+            ("Apex Charitable Trust, West Zone\nडिस्चार्ज सारांश", []),
             ("भर्ती की तारीख: 26.10.2026\nछुट्टी की तारीख: 30.10.2026", []),
             ("निदान: फेफड़ों की टीबी (A15.0); निमोनिया (J18.9); मलेरिया (B54);", []),
             ("Procedure: Laparoscopic cholecystectomy done on day 2.", []),

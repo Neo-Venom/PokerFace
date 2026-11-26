@@ -1,4 +1,4 @@
-"""Unit tests for Step H: independent post-export leakage scanner."""
+"""Unit tests for Step H: independent post-export leakage scanner and secret handling."""
 import json
 from pathlib import Path
 
@@ -30,17 +30,17 @@ def test_step_h_rescrubs_residual_leak_and_preserves_doctor_clinical(tmp_path: P
     san = _setup_mock_output(
         tmp_path,
         "notes/doc1.txt",
-        "Patient Mahesh Chauhan seen by Dr. Ramesh Srivastava. Platelet Count 240124 /uL. Mob: 9876543210.",
+        "Patient Ravi Kulkarni seen by Dr. Vivek Menon. Platelet Count 240124 /uL. Mob: 9876543210.",
     )
     summary = scan_and_remediate(
         tmp_path,
-        known_surfaces={"mahesh chauhan": "PATIENT_NAME", "ramesh srivastava": "PATIENT_NAME"},
-        doctor_surfaces={"ramesh srivastava"},
+        known_surfaces={"ravi kulkarni": "PATIENT_NAME", "vivek menon": "PATIENT_NAME"},
+        doctor_surfaces={"vivek menon"},
     )
     cleaned = san.read_text(encoding="utf-8")
-    assert "Mahesh Chauhan" not in cleaned
+    assert "Ravi Kulkarni" not in cleaned
     assert "9876543210" not in cleaned
-    assert "Dr. Ramesh Srivastava" in cleaned
+    assert "Dr. Vivek Menon" in cleaned
     assert "240124 /uL" in cleaned
     assert summary.files_rescrubbed == 1
     assert summary.files_quarantined_qa == 0
@@ -49,12 +49,12 @@ def test_step_h_rescrubs_residual_leak_and_preserves_doctor_clinical(tmp_path: P
 def test_step_h_quarantines_unscrubbable_filename_leak(tmp_path: Path):
     san = _setup_mock_output(
         tmp_path,
-        "notes/Mahesh_Chauhan_note.txt",
+        "notes/Ravi_Kulkarni_note.txt",
         "Clean text inside.",
     )
     summary = scan_and_remediate(
         tmp_path,
-        known_surfaces={"mahesh chauhan": "PATIENT_NAME"},
+        known_surfaces={"ravi kulkarni": "PATIENT_NAME"},
         doctor_surfaces=set(),
     )
     assert not san.exists()
@@ -66,18 +66,21 @@ def test_step_h_quarantines_unscrubbable_filename_leak(tmp_path: Path):
     assert (tmp_path / "records.jsonl").read_text(encoding="utf-8").strip() == ""
 
 
-def test_step_h_missing_secret_refused_and_deterministic_run(tmp_path: Path, monkeypatch):
+def test_step_h_missing_empty_and_short_secret_handling(tmp_path: Path, monkeypatch):
     from raksha.pipeline import run_pipeline
 
     inp = tmp_path / "in"
     inp.mkdir()
     (inp / "note.txt").write_text("Name: Zubin Khosravi\nC/O fever for 3 days.\nParacetamol 650 mg.", encoding="utf-8")
 
+    # Missing or empty secret -> error exit 1
     monkeypatch.delenv("RAKSHA_SECRET", raising=False)
-    out_bad = tmp_path / "out_bad"
-    assert run_pipeline(inp, out_bad) == 1
+    assert run_pipeline(inp, tmp_path / "out_missing") == 1
+    monkeypatch.setenv("RAKSHA_SECRET", "")
+    assert run_pipeline(inp, tmp_path / "out_empty") == 1
 
-    monkeypatch.setenv("RAKSHA_SECRET", "test-secret-key")
+    # Short non-empty secret (1 char) -> accepted & deterministic
+    monkeypatch.setenv("RAKSHA_SECRET", "x")
     out1 = tmp_path / "out1"
     out2 = tmp_path / "out2"
     assert run_pipeline(inp, out1) == 0
@@ -92,15 +95,13 @@ def test_step_h_missing_secret_refused_and_deterministic_run(tmp_path: Path, mon
 def test_step_h_txt_starting_with_bracket_timestamp_not_quarantined_as_json(tmp_path: Path):
     san = _setup_mock_output(
         tmp_path,
-        "lab/whatsapp_forward_0003.txt",
+        "lab/chat_forward_0001.txt",
         "[30/05/26, 9:32 pm] [RELATIVE_NAME]: Report of [PATIENT_NAME]\nKoi problem ho to call karo [PHONE]",
     )
     summary = scan_and_remediate(
         tmp_path,
-        known_surfaces={"asha rajput": "PATIENT_NAME"},
+        known_surfaces={"ananya deshpande": "PATIENT_NAME"},
         doctor_surfaces=set(),
     )
     assert san.is_file()
     assert summary.files_quarantined_qa == 0
-
-

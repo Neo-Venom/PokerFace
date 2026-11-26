@@ -5,7 +5,11 @@ __pycache__/
 .pytest_cache/
 .baseline_out/
 .dev_out/
+.dev_out_lf/
 .dev_lf_in/
+.tmp_toolkit/
+.unseen_data/
+.unseen_out*/
 .tmp_*/
 *.log
 .DS_Store

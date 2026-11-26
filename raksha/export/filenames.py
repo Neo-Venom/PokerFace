@@ -15,8 +15,14 @@ if TYPE_CHECKING:
 
 _B64_CAND_RE = re.compile(r"^[A-Za-z0-9+/]{24,}={0,2}$")
 _FILENAME_ID_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9])("
-    r"(?:SNJ|JJH|UHID|DHH|IPD|IP|ADM)[-_]?(?:\d{2,4}[-_])?\d{3,}"
+    r"(?i)(?<![A-Za-z0-9])"
+    r"(?!(?:report|forward|whatsapp|nursing|discharge|summary|protocol|census|claims|results|patients|bundle|export|visits)[-_])"
+    r"("
+    r"[A-Za-z]{2,6}[-_]\d{2,4}[-_]\d{3,}"
+    r"|[A-Za-z]{2,6}[-_][A-Za-z]{2,4}[-_]\d{3,}"
+    r"|[A-Za-z]{2,6}\d{4}[-_]\d{3,}"
+    r"|[A-Za-z]{2,6}[-_]\d{5,}"
+    r"|[A-Za-z]{2,4}\d{5,}"
     r"|(?:[6-9]\d{9})"
     r")(?![A-Za-z0-9])"
 )

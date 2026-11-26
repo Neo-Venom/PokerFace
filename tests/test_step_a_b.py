@@ -24,7 +24,7 @@ def test_step_a_numeric_aadhaar_in_json():
 def test_step_a_key_collision_and_facility_preserved():
     doc = {
         "facility": {"name": "District Hospital"},
-        "by_name": {"Alice Kumar": "UHID-10001", "Bob Yadav": "UHID-10002"},
+        "by_name": {"Alice Kumar": "HOSP-10001", "Bob Nair": "HOSP-10002"},
     }
     out = sanitize_json_data(doc)
     assert out["facility"]["name"] == "District Hospital"

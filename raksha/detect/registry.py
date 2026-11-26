@@ -14,14 +14,10 @@ from raksha.detect.normalize import (
 )
 from raksha.detect.structured import _is_fhir_bundle, infer_column_type
 
-# Generic Indian surnames / titles that must NOT be matched standalone as a single token
+# General pan-Indian common surnames/titles/locality suffixes that must NOT match standalone as single tokens
 _GENERIC_SINGLE_TOKENS = {
-    "devi", "kumar", "kumari", "singh", "kaur", "patel", "pandey", "pandeya", "pande",
-    "yadav", "chauhan", "chouhan", "sharma", "sarma", "verma", "tiwari", "gupta", "khan",
-    "ansari", "siddiqui", "siddiqi", "thakur", "nishad", "bano", "malik", "baig", "masih",
-    "lodhi", "paswan", "chaudhary", "chaudhari", "choudhary", "qureshi", "khatoon", "khatun",
-    "shaikh", "sheikh", "qadri", "srivastava", "bedi", "kulshrestha", "menon", "rizvi",
-    "ahmed", "ahmad", "ram", "lal", "nath", "prasad", "das", "rao", "ji", "md", "mohd",
+    "devi", "kumar", "kumari", "singh", "kaur", "sharma", "verma", "gupta", "patel",
+    "yadav", "khan", "das", "rao", "nath", "prasad", "lal", "ram", "ji", "md", "mohd",
     "kalan", "khurd", "pur", "ganj", "garh", "nagar", "bazar",
 }
 
@@ -81,7 +77,7 @@ class AliasRegistry:
         toks = [t for t in re.split(r"[\s_]+", s) if t]
         if pk and len(toks) >= 2:
             self.phonetic_phrases.setdefault(pk, (label, role, len(toks)))
-            # Also reversed surname-first / given-last order (e.g. Shahid_Mohammad vs Mohammad Shahid)
+            # Also reversed surname-first / given-last order
             rev_pk = phonetic_key(" ".join(reversed(toks)))
             if rev_pk:
                 self.phonetic_phrases.setdefault(rev_pk, (label, role, len(toks)))

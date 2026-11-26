@@ -94,12 +94,12 @@ _INSURANCE_PATTERNS = [
     re.compile(r"\bPOL/\d{2,4}/\d{4,}\b", re.I),
 ]
 _MRN_PATTERNS = [
-    re.compile(r"\b[A-Z]{2,6}/\d{2,4}/\d{4,}\b"),      # e.g. SNJ/26/064127, IP/26/00130
-    re.compile(r"\b[A-Z]{2,6}-\d{5,}\b"),              # e.g. JJH-0077132, UHID-010610
-    re.compile(r"\b[A-Z]{2,6}\d{4}-\d{4,}\b"),         # e.g. DHH2026-084999
-    re.compile(r"\b[A-Z]{2,6}-IPD-\d{3,}\b"),          # e.g. DHH-IPD-00591
-    re.compile(r"\bIPD-\d{4}-\d{3,}\b"),               # e.g. IPD-2026-00432
-    re.compile(r"\bADM\d{4,}\b"),                      # e.g. ADM000162
+    re.compile(r"\b[A-Z]{2,6}/\d{2,4}/\d{3,}\b"),          # e.g. HOSP/26/001234
+    re.compile(r"\b[A-Z]{2,6}-\d{4,}\b"),                  # e.g. HOSP-0012345
+    re.compile(r"\b[A-Z]{2,6}\d{4}-\d{3,}\b"),             # e.g. HOSP2026-001234
+    re.compile(r"\b[A-Z]{2,6}-[A-Z]{2,4}-\d{3,}\b"),       # e.g. HOSP-IPD-00123
+    re.compile(r"\b[A-Z]{2,5}-\d{2,4}-\d{3,}\b"),          # e.g. IPD-2026-00123
+    re.compile(r"\b[A-Z]{2,5}\d{5,}\b"),                   # e.g. ADM000123
 ]
 _LABELED_MRN_RE = re.compile(
     r"(?i)(?:\bUHID|\bMRN|\bReg\.?\s*No\.?|\bIPD\s*No\.?|पंजीकरण\s*सं\.?|आईपीडी\s*सं\.?)\s*[:#]\s*([A-Z0-9][A-Z0-9/\-]{3,24})"

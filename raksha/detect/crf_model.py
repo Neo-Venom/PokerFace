@@ -26,7 +26,7 @@ _CRF_STOPWORDS = {
     "medications", "normal", "stable", "condition", "fever", "pain", "cough", "tablet",
     "tab", "cap", "inj", "inh", "sachet", "dolo", "paracetamol", "low", "high",
     "next", "morning", "evening", "day", "days", "week", "weeks", "month", "months",
-    "discharged", "admitted", "treated", "conservatively", "referred", "asha",
+    "discharged", "admitted", "treated", "conservatively", "referred",
     "opd", "ipd", "uhid", "mrn", "dob", "age", "sex", "mob", "mobile", "phone",
     "tehsil", "distt", "district", "address", "village", "gram", "mohalla", "ward",
     "report", "forwarded", "attachment", "diet", "salt", "diabetic", "blood", "sugar",

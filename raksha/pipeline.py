@@ -25,7 +25,7 @@ from raksha.detect.protected import build_clinical_lexicon, resolve_pii_vs_prote
 from raksha.detect.registry import build_alias_registry
 from raksha.detect.structured import infer_column_type, process_table_rows, sanitize_json_data
 from raksha.export.filenames import sanitize_relative_path
-from raksha.ingest.loader import decode_bytes, load_json_safe, load_tabular, sniff_format
+from raksha.ingest.loader import SUPPORTED_EXTS, decode_bytes, load_json_safe, load_tabular, sniff_format
 from raksha.qa.leak_scanner import scan_and_remediate
 
 
@@ -158,6 +158,8 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
         raw = path.read_bytes()
         sha = hashlib.sha256(raw).hexdigest()
         try:
+            if path.suffix.lower() not in SUPPORTED_EXTS:
+                raise ValueError("unsupported_format")
             text = decode_bytes(raw)
             fmt = sniff_format(path, text)
             if fmt in ("csv", "tsv"):

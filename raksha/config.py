@@ -12,7 +12,6 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 _ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32 (no I, L, O, U)
-MIN_SECRET_LEN = 4
 
 
 def load_policy(root: Path = ROOT_DIR) -> dict:
@@ -34,10 +33,10 @@ def load_policy(root: Path = ROOT_DIR) -> dict:
 
 
 def require_secret() -> bytes:
-    """Validate and return RAKSHA_SECRET without ever logging or exposing it."""
+    """Validate and return RAKSHA_SECRET (error only if missing or empty)."""
     raw = os.environ.get("RAKSHA_SECRET", "")
-    if len(raw) < MIN_SECRET_LEN:
-        raise ValueError("missing_or_weak_secret")
+    if not raw:
+        raise ValueError("missing_secret")
     return raw.encode("utf-8")
 
 

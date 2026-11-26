@@ -22,15 +22,12 @@ _RE_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _RE_INSURANCE = re.compile(r"^(?:PMJAY[-/A-Z0-9]{4,}|POL/\d+/\d+|AB-PMJAY[-/A-Z0-9]+|CGHS[-/A-Z0-9]+|ESIS[-/A-Z0-9]+)$", re.I)
 _RE_MRN = re.compile(
     r"^(?:"
-    r"SNJ/\d{2}/\d{4,}"
-    r"|JJH-\d{4,}"
-    r"|UHID-\d{4,}"
-    r"|DHH\d{4}-\d{4,}"
-    r"|DHH-IPD-\d{3,}"
-    r"|IPD-\d{4}-\d{3,}"
-    r"|IP/\d{2}/\d{3,}"
-    r"|ADM\d{4,}"
-    r"|[A-Z]{2,5}[/-]\d{2,4}[/-]\d{4,}"
+    r"[A-Z]{2,6}/\d{2,4}/\d{3,}"
+    r"|[A-Z]{2,6}-\d{4,}"
+    r"|[A-Z]{2,6}\d{4}-\d{3,}"
+    r"|[A-Z]{2,6}-[A-Z]{2,4}-\d{3,}"
+    r"|[A-Z]{2,5}-\d{2,4}-\d{3,}"
+    r"|[A-Z]{2,5}\d{5,}"
     r")$"
 )
 _RE_PIN = re.compile(r"^[1-8]\d{5}$")
@@ -100,13 +97,10 @@ _PROSE_OR_CLINICAL_STOPWORDS = _CLINICAL_OR_NON_NAME_WORDS | {
     "oxygen", "given", "en", "route", "for", "with", "and", "the", "by", "called",
     "from", "to", "fever", "pain", "days", "stable", "normal", "reviewed", "hospital",
     "district", "ward", "bed", "protocol", "report", "allergic", "sulfa", "drugs",
-    "arrival", "sent", "emergency", "referred", "asha", "worker", "village", "visit",
+    "arrival", "sent", "emergency", "referred", "worker", "village", "visit",
     "next", "verify", "identity", "old", "card", "merged", "temp", "diet", "salt",
     "low", "diabetic", "advice", "morning", "evening", "condition", "discharged",
 }
-# Note: exclude "asha" from prose stopwords because "Asha" is a common Indian first name;
-# "ASHA worker" is protected in context/clinical spans instead.
-_PROSE_OR_CLINICAL_STOPWORDS.discard("asha")
 
 
 def _looks_like_person_name(val: str) -> bool:
@@ -479,10 +473,10 @@ def sanitize_header_or_key(text: str, parent_key: str = "", stats: dict[str, int
             stats["EMAIL"] = stats.get("EMAIL", 0) + 1
         return "[EMAIL]"
 
-    # Compound headers like "JJH-0077112 Zainab"
+    # Compound headers containing MRNs and/or patient names (e.g. "<MRN> <FirstName>")
     out = s
     out, n_mrn = re.subn(
-        r"(?:SNJ/\d{2}/\d{4,}|JJH-\d{4,}|UHID-\d{4,}|DHH\d{4}-\d{4,}|DHH-IPD-\d{3,}|IPD-\d{4}-\d{3,}|IP/\d{2}/\d{3,}|ADM\d{4,}|[A-Z]{2,5}[/-]\d{2,4}[/-]\d{4,})",
+        r"(?:[A-Z]{2,6}/\d{2,4}/\d{3,}|[A-Z]{2,6}-\d{4,}|[A-Z]{2,6}\d{4}-\d{3,}|[A-Z]{2,6}-[A-Z]{2,4}-\d{3,}|[A-Z]{2,5}-\d{2,4}-\d{3,}|[A-Z]{2,5}\d{5,})",
         "[MRN]",
         out,
     )
@@ -757,7 +751,7 @@ def _sanitize_fhir_bundle(bundle: dict, text_scrubber=None, stats: dict[str, int
 
 
 def _scrub_fhir_narrative(text: str, stats: dict[str, int] | None = None) -> str:
-    """Clean Patient.text.div narrative like 'Shabana Bano, 27 yrs, female, SNJ/26/064545'."""
+    """Clean Patient.text.div narrative like 'Ravi Verma, 34 yrs, male, HOSP/27/001234'."""
     parts = [p.strip() for p in text.split(",")]
     cleaned = []
     for idx, part in enumerate(parts):

@@ -61,16 +61,16 @@ _HONORIFIC_SUFFIXES = {
 
 # --------------------------------------------------------------------------- name & address triggers
 _PATIENT_LABEL_RE = re.compile(
-    rf"(?:Patient(?:'s)?[ \t]+Name|Pt\.?[ \t]+Name|Name|मरीज़[ \t]+का[ \t]+नाम|रोगी[ \t]+का[ \t]+नाम|नाम)"
+    rf"(?:Patient(?:'s)?[ \t]+Name|Pt\.?[ \t]+Name|Beneficiary|Client[ \t]+Name|Subject[ \t]+Name|Name|मरीज़[ \t]+का[ \t]+नाम|रोगी[ \t]+का[ \t]+नाम|नाम)"
     rf"[ \t]*[:\-][ \t]*"
     rf"({_NAME_SEQ}|[{_NL}][{_AL}]+,[ \t]*[{_NL}][{_AL}]+)"
-    rf"(?=[ \t]{{2,}}|[ \t]+(?:Age|Sex|Gender|DOB|UHID|MRN|Reg|IPD|S/o|D/o|W/o|आयु|उम्र|लिंग|पंजीकरण|पिता|पति)\b|[ \t]*[,;\.\n\r]|$)",
+    rf"(?=[ \t]{{2,}}|[ \t]+(?:Age|Sex|Gender|DOB|UHID|MRN|Reg|IPD|S/o|D/o|W/o|आयु|उम्र|लिंग|पंजीकरण|पिता|पति)\b|[ \t]*[,;\.\(\n\r]|$)",
     re.I,
 )
 
 # Relative triggers
 _REL_LABEL_RE = re.compile(
-    rf"(?:(?:[SDW][ \t]*/[ \t]*[Oo])|(?:पिता[ \t]+का[ \t]+नाम|पति[ \t]+का[ \t]+नाम|माता[ \t]+का[ \t]+नाम|अभिभावक)[ \t]*[:\-]?|Attendant(?:[ \t]*\([^)]*\))?[ \t]*[:\-])"
+    rf"(?:(?:[SDW][ \t]*/[ \t]*[Oo])|(?:पिता[ \t]+का[ \t]+नाम|पति[ \t]+का[ \t]+नाम|माता[ \t]+का[ \t]+नाम|अभिभावक)[ \t]*[:\-]?|(?:Attendant|Caretaker|Guardian|Next[ \t]+of[ \t]+Kin)(?:[ \t]*\([^)]*\))?[ \t]*[:\-])"
     rf"[ \t]*({_NAME_SEQ})"
     rf"(?=[ \t]*[,.;\)\n\r]|[ \t]+(?:discharged|informed|Mob|Mobile|Phone|को|से)\b|$)",
     re.I,
@@ -81,12 +81,12 @@ _REL_INLINE_RE = re.compile(
     rf"\b([SDW]/[Oo])[ \t]+({_NAME_SEQ})"
 )
 
-# Prefix honorifics (Mr/Mrs/Ms/Smt/Shri/श्री/श्रीमती)
+# Prefix honorifics (Mr/Mrs/Ms/Smt/Shri/श्री/श्रीमती) and "Pt. <Capitalized Name>"
 _PREFIX_HONORIFIC_RE = re.compile(
-    rf"(?<!\w)(?:Mr\.?|Mrs\.?|Ms\.?|Miss|Smt\.?|Shri|Shree|Sri|श्री|श्रीमती|सुश्री)[ \t]+({_NAME_SEQ})"
+    rf"(?<!\w)(?:Mr\.?|Mrs\.?|Ms\.?|Miss|Smt\.?|Shri|Shree|Sri|श्री|श्रीमती|सुश्री|(?-i:Pt\.?))[ \t]+({_NAME_SEQ})"
 )
 
-# Hinglish honorific/relationship suffixes ("Asha ji", "Shahid sahab", "Kamal Bhaiya", "Umesh Mama")
+# Hinglish honorific/relationship suffixes ("Rohan ji", "Kiran sahab", "Priya Bhaiya", "Sohan Mama")
 _SUFFIX_HONORIFIC_RE = re.compile(
     rf"({_SHORT_SEQ})[ \t]+"
     rf"(?:ji|sahab|saheb|saab|didi|behenji|bahenji|bhai|bhaiya|bhaisahab|chacha|chachu|mama|mami|mausi|bhabhi|amma|baba|जी|साहब|दीदी|बहनजी|भाई|भैया)"
@@ -125,7 +125,7 @@ _TIMED_NOTE_NAME_RE = re.compile(
     rf"(?:^|\n)[ \t]*\d{{1,2}}:\d{{2}}[ \t]*[-–][ \t]*({_NAME_SEQ})(?=[ \t]*(?:[-–][ \t]*K/C/O|\(|,|\n|$))"
 )
 
-# Initials pattern like "K. R. Sharma", "A. Kumar", "Md. Shahid"
+# Initials pattern like "K. R. Menon", "A. Nair", "Md. Tariq"
 _INITIALS_NAME_RE = re.compile(
     r"(?<!\w)(?:[A-Z]\.[ \t]*){1,2}[A-Z][a-z]{2,20}(?!\w)"
 )
