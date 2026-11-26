@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,14 +34,26 @@ _RE_PAN = re.compile(r"^[A-Z]{5}\d{4}[A-Z]$")
 _RE_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _RE_INSURANCE = re.compile(r"^(?:PMJAY[-/A-Z0-9]{4,}|POL/\d+/\d+|AB-PMJAY[-/A-Z0-9]+|CGHS[-/A-Z0-9]+|ESIS[-/A-Z0-9]+)$", re.I)
 _RE_MRN = re.compile(
-    r"^(?:"
-    r"[A-Z]{2,6}/\d{2,4}/\d{3,}"
+    r"^(?!LAB-|ORD-|BL/|OPD/|LOINC|ICD)(?:"
+    r"[A-Z]{2,6}(?:/[A-Z]{1,6})?/\d{2,4}/\d{3,}"
+    r"|[A-Z]{2,6}:[A-Z0-9]{2,8}:[A-Z0-9]{1,8}:\d{3,}"
+    r"|[A-Z]{2,6}_[A-Z0-9]{2,8}_\d{2,4}_\d{3,}"
+    r"|[A-Z]{2,6}-[A-Z0-9]{1,5}-\d{3,}"
     r"|[A-Z]{2,6}-\d{4,}"
     r"|[A-Z]{2,6}\d{2,4}-\d{3,}"
-    r"|[A-Z]{2,6}-[A-Z]{2,4}-\d{3,}"
-    r"|[A-Z]{2,5}-\d{2,4}-\d{3,}"
     r"|[A-Z]{2,5}\d{5,}"
     r")$"
+)
+_EMBEDDED_MRN_RE = re.compile(
+    r"(?!LAB-|ORD-|BL/|OPD/|LOINC|ICD)(?:"
+    r"[A-Z]{2,6}(?:/[A-Z]{1,6})?/\d{2,4}/\d{3,}"
+    r"|[A-Z]{2,6}:[A-Z0-9]{2,8}:[A-Z0-9]{1,8}:\d{3,}"
+    r"|[A-Z]{2,6}_[A-Z0-9]{2,8}_\d{2,4}_\d{3,}"
+    r"|[A-Z]{2,6}-[A-Z0-9]{1,5}-\d{3,}"
+    r"|[A-Z]{2,6}-\d{4,}"
+    r"|[A-Z]{2,6}\d{2,4}-\d{3,}"
+    r"|[A-Z]{2,5}\d{5,}"
+    r")"
 )
 _RE_PIN = re.compile(r"^[1-8]\d{5}$")
 _RE_DATE = re.compile(
@@ -55,7 +68,7 @@ _RE_HOUSE_VAL = re.compile(
     r"(?i)^(?:h\.?\s*no\.?|house(?:\s+no\.?)?|makan(?:\s+no\.?)?|qtr\.?|quarter|flat(?:\s+no\.?)?|plot(?:\s+no\.?)?|door(?:\s+no\.?)?)[\s.\-#:/]*[A-Za-z0-9/-]*\d[A-Za-z0-9/-]*$"
 )
 _RE_LOCALITY_VAL = re.compile(
-    rf"(?i)^(?:ward\s*(?:no\.?)?\s*\d+|sector\s*[-#]?\s*[A-Za-z0-9]+(?:\s+(?:colony|phase|extension|block))?|phase\s*[-#]?\s*\d+|mohalla\s+.+|[{_LU}][a-z0-9\u00DF-\u024F\s\-]{{2,35}}\s+(?:colony|nagar|vihar|enclave|puram|extension|basti|tola|layout))$"
+    rf"(?i)^(?:ward\s*(?:no\.?)?\s*\d+|sector\s*[-#]?\s*[A-Za-z0-9]+(?:\s+(?:colony|phase|extension|block))?|phase\s*[-#]?\s*\d+|mohalla\s+.+|[{_LU}][{_LL}0-9\s\-]{{2,35}}\s+(?:colony|nagar|vihar|enclave|puram|extension|basti|tola|layout|chowk|bazaar|bazar|mandi|ganj|bagh|sarai|chauraha|pura|marg|lane|market)|[{_DL}]+(?:\s+[{_DL}]+){{0,2}}\s+(?:मोहल्ला|टोला|बस्ती|कॉलोनी|नगर|विहार|बाज़ार|बाजार|मंडी|चौक|गली|गंज|बाग़|बाग|मार्ग))$"
 )
 _RE_LANDMARK_VAL = re.compile(r"(?i)^(?:near|opp\.?|opposite|behind|beside)\s+.+")
 _SYNTH_CANARY_KEY_RE = re.compile(r"^[A-Z][a-z]{4,20}\d{1,2}[a-z]{0,4}$")
@@ -194,25 +207,26 @@ def _looks_like_address_composite(val: str) -> bool:
         re.search(
             r"(?i)(?:h\.?\s*no\.?|house\s+\d|makan\s*no|मकान\s*नं|qtr[\s.\-#]*\d|quarter\s*\d|flat\s*(?:no\.?)?\s*\d|plot\s*(?:no\.?)?\s*\d|"
             r"ward\s+\d+|sector\s*[-#]?\s*\w+|mohalla|colony|मोहल्ला|"
-            r"tehsil|तहसील|distt\.?|जिला|near\s+|opp\.|के\s+पास|के\s+पीछे|vill\.|gram\s+|ग्राम\s+|c/o\s+)",
+            r"tehsil|तहसील|distt\.?|जिला|near\s+|opp\.|opposite\s+|behind\s+|beside\s+|के\s+पास|के\s+पीछे|के\s+सामने|vill\.|gram\s+|ग्राम\s+|c/o\s+)",
             s,
         )
     )
 
 
-# --------------------------------------------------------------------------- composite address scrubber
+# --------------------------------------------------------------------------- composite address scrubber (LANDMARK before LOCALITY)
 _ADDR_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("RELATIVE_NAME", re.compile(rf"(?i)(?<=C/O\s)([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+[{_LU}{_DL}][{_LL}{_DL}.'\-]+){{0,3}})(?=,|$)")),
     ("HOUSE", re.compile(r"(?i)\b(?:H\.?\s*No\.?|House(?:\s+No\.?)?|Makan\s+No\.?|Qtr\.?|Quarter|Flat(?:\s+No\.?)?|Plot(?:\s+No\.?)?|Door(?:\s+No\.?)?)[\s.\-#:/]*[\dA-Za-z/-]*\d[\dA-Za-z/-]*")),
     ("HOUSE", re.compile(r"मकान\s*(?:नं\.?|सं\.?)\s*[\d०-९A-Za-z/-]+")),
+    ("LANDMARK", re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind|beside)\s+[^,\n]+")),
+    ("LANDMARK", re.compile(r"[^,\n]+\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
     ("LOCALITY", re.compile(r"(?i)\bWard\s*(?:No\.?)?\s*\d+")),
     ("LOCALITY", re.compile(r"वार्ड\s*(?:नं\.?)?\s*[\d०-९]+")),
     ("LOCALITY", re.compile(r"(?i)\bSector\s*[-#]?\s*[A-Za-z0-9]+(?:\s+(?:Colony|Phase|Extension|Enclave|Block))?")),
     ("LOCALITY", re.compile(r"(?i)\bMohalla\s+[^,\n]+")),
-    ("LOCALITY", re.compile(rf"\b[{_LU}][a-zA-Z0-9\u00DF-\u024F]*(?:\s+[{_LU}0-9][a-zA-Z0-9\u00DF-\u024F]*){{0,2}}\s+(?:Colony|Nagar|Vihar|Enclave|Puram|Extension|Basti|Tola|Layout)\b")),
+    ("LOCALITY", re.compile(rf"\b[{_LU}][{_LL}0-9]*(?:\s+[{_LU}0-9][{_LL}0-9]*){{0,2}}\s+(?:Colony|Nagar|Vihar|Enclave|Puram|Extension|Basti|Tola|Layout|Chowk|Bazaar|Bazar|Mandi|Ganj|Bagh|Sarai|Chauraha|Pura|Marg|Lane|Market|Phase|Block)\b")),
     ("LOCALITY", re.compile(r"मोहल्ला\s+[^,\n]+")),
-    ("LANDMARK", re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind|beside)\s+[^,\n]+")),
-    ("LANDMARK", re.compile(r"[^,\n]+\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
+    ("LOCALITY", re.compile(rf"[{_DL}]+(?:\s+[{_DL}]+){{0,2}}\s+(?:मोहल्ला|टोला|बस्ती|कॉलोनी|नगर|विहार|बाज़ार|बाजार|मंडी|चौक|गली|गंज|बाग़|बाग|मार्ग)(?=\s*[,;\.\-\n\r]|$)")),
     ("VILLAGE", re.compile(r"(?i)\b(?:Vill\.?|Village|Gram)\s+[^,\n\-]+")),
     ("VILLAGE", re.compile(r"ग्राम\s+[^,\n\-]+")),
     ("VILLAGE", re.compile(rf"(?i)(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Qtr|Quarter|Flat|Plot|Ward|Sector|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([{_LU}{_DL}][^\n,]+?)(?=,\s*(?:Tehsil|तहसील)\b)")),
@@ -239,7 +253,7 @@ _FREE_TEXT_HEADERS = {
 # --------------------------------------------------------------------------- compositional header/key inference + schema engine
 _PATIENT_SUBJ_PARTS = {
     "pt", "pat", "patient", "beneficiary", "client", "member", "subject", "person",
-    "individual", "rogi", "mariz", "मरीज़", "रोगी", "लाभार्थी",
+    "individual", "rogi", "mariz", "mareez", "mareej", "मरीज़", "रोगी", "लाभार्थी",
 }
 _REL_SUBJ_PARTS = {
     "rel", "relative", "guardian", "caretaker", "attendant", "nok", "kin", "father",
@@ -255,7 +269,7 @@ _FACILITY_PARTS = {
     "trust", "institute", "laboratory", "lab", "dept", "department", "system",
 }
 _NAME_PROP_PARTS = {
-    "name", "nm", "naam", "full", "fullname", "first", "given", "fore", "fname",
+    "name", "nm", "naam", "full", "fullname", "moniker", "first", "given", "fore", "fname",
     "last", "sur", "family", "sname", "lname", "middle", "local", "नाम",
 }
 _FIRST_NAME_PARTS = {"first", "given", "fore", "fname"}
@@ -266,7 +280,7 @@ _ID_PROP_PARTS = {
 }
 _NON_PATIENT_ID_EXCLUDE = {
     "package", "icd", "loinc", "sex", "gender", "test", "drug", "bill", "sample",
-    "visit", "encounter", "claim", "batch", "doc", "att", "org", "category",
+    "order", "orders", "specimen", "visit", "encounter", "claim", "batch", "doc", "att", "org", "category",
 }
 _CLINICAL_ONLY_PARTS = {
     "drug", "medicine", "medication", "rx", "strength", "dose", "dosage", "freq",
@@ -278,7 +292,7 @@ _CLINICAL_ONLY_PARTS = {
     "intent", "clinicalstatus", "resourcetype", "class", "ward", "wards", "beds", "occupied",
 }
 _DATE_PROP_PARTS = {
-    "dt", "date", "dinank", "tithi", "दिनांक", "तारीख", "collected", "reported",
+    "dt", "date", "mdy", "dmy", "ymd", "dinank", "tithi", "दिनांक", "तारीख", "collected", "reported",
     "registered", "admission", "discharge", "adm", "dis", "exported", "generated",
     "recorded", "authored", "performed", "effective", "lastupdated", "timestamp", "भर्ती", "छुट्टी",
 }
@@ -311,26 +325,28 @@ def classify_header_parts(header_raw: str, parent_key: str = "") -> str | None:
     ):
         return "META_PATH"
 
-    # Explicit facility / clinical sub-objects take precedence (except hospital_uhid / address)
+    # Explicit facility / clinical sub-objects take precedence (except hospital_uhid / address / patient-bearing rows)
+    clin_sub_exclude = _CLINICAL_ONLY_PARTS - {"results", "result", "visits", "diagnosis"}
     if (
-        pk in ("facility", "hospital", "organization", "lab", "panels", "diagnosis", "diagnoses", "rx", "medications", "vitals", "results")
-        or bool(pparts & (_CLINICAL_ONLY_PARTS | _FACILITY_PARTS))
+        pk in ("facility", "hospital", "organization", "lab", "panels", "rx", "medications", "vitals", "analytes")
+        or (pk in ("diagnosis", "diagnoses", "results") and not (pset & (_PATIENT_SUBJ_PARTS | _NAME_PROP_PARTS | _PHONE_PARTS | {"uhid", "mrn"})))
+        or bool(pparts & (clin_sub_exclude | _FACILITY_PARTS))
     ) and not (pset & {"uhid", "mrn"}):
         return "NON_PII"
     if (pset & _CLINICIAN_PARTS) and not (pset & _PATIENT_SUBJ_PARTS):
         return "DOCTOR"
     if (
         k in _FREE_TEXT_HEADERS
-        or ("note" in pset or "notes" in pset or "remarks" in pset or "comment" in pset)
+        or bool(pset & {"note", "notes", "remark", "remarks", "comment", "comments"})
     ) and not (pset & {"addr", "address", "pata", "niwas", "residence", "residential", "street", "निवास", "पता"}):
         return "FREE_TEXT"
 
-    # Strong national/contact/demographic stems checked before clinical exclusions
-    if any(w in k for w in ("aadhar", "aadhaar", "adhaar", "addhar", "uidai", "आधार")):
+    # Strong national/contact/demographic stems checked before clinical exclusions (word-part boundaries prevent e.g. 'gram_sabha' -> ABHA)
+    if pset & {"aadhar", "aadhaar", "adhaar", "addhar", "uidai", "आधार"} or "aadhaar" in k or "aadhar" in k:
         return "AADHAAR"
-    if ("abha" in k or "abdm" in k or "phr" in k or "health_id" in k or "healthid" in k) and ("addr" in pset or "addr" in k):
+    if (pset & {"abha", "abdm", "ndhm", "आभा"} or "health_id" in k or "healthid" in k) and ("addr" in pset or "address" in pset):
         return "ABHA_ADDRESS"
-    if any(w in k for w in ("abha", "abdm", "ndhm", "health_id", "healthid", "आभा")):
+    if pset & {"abha", "abdm", "ndhm", "आभा"} or "health_id" in k or "healthid" in k:
         return "ABHA_NUMBER"
     if pset & {"email", "mail", "e_mail"} or "email" in k or "e_mail" in k:
         return "EMAIL"
@@ -388,13 +404,13 @@ def classify_header_parts(header_raw: str, parent_key: str = "") -> str | None:
     if (pset & _CLINICAL_ONLY_PARTS) and not (pset & {"name", "nm", "naam"} and pset & _PATIENT_SUBJ_PARTS):
         return "NON_PII"
 
-    # Explicit Clinical / Encounter dates vs generic unknown date columns
+    # Explicit Clinical / Encounter dates vs IDs vs generic date columns
+    # Event words like 'visit', 'encounter', 'adm', 'reg' MUST NOT block IDs like visit_uid / Encounter_Code
     if k in _CLINICAL_DATE_KEYS or (
-        pset & {
-            "collected", "reported", "registered", "admission", "discharge", "adm", "dis",
-            "visit", "encounter", "exported", "generated", "recorded", "authored", "performed",
-            "effective", "lastupdated", "reg", "भर्ती", "छुट्टी",
-        }
+        bool(pset & {"collected", "reported", "registered", "admission", "discharge", "admit", "exported", "generated", "recorded", "authored", "performed", "effective", "lastupdated", "भर्ती", "छुट्टी"})
+        and not (pset & _ID_PROP_PARTS)
+    ) or (
+        bool(pset & {"visit", "encounter", "adm", "dis", "reg"}) and bool(pset & _DATE_PROP_PARTS)
     ):
         return "CLINICAL_DATE"
     if pset & _DATE_PROP_PARTS:
@@ -725,13 +741,18 @@ def infer_table_schema(header: list[str], body: list[list[str]], parent_key: str
 def infer_dict_schema(obj: dict[str, Any], parent_key: str = "") -> DictSchema:
     """Inspect a JSON dict object via key parts, leaf value patterns, and sibling context."""
     schema = DictSchema()
-    pk_parts = set(split_key_parts(parent_key))
+    pk_seq = split_key_parts(parent_key)
+    pk_parts = set(pk_seq)
 
-    # First check person-indexed map dicts like {"by_beneficiary": {"Name": "MRN", ...}}
-    if len(obj) >= 1 and (
-        parent_key and (split_key_parts(parent_key)[0] == "by" or "map" in pk_parts or "index" in pk_parts)
+    # First check person-indexed map dicts like {"by_beneficiary": ..., "results_by_patient": ...}
+    if len(obj) >= 1 and pk_seq and (
+        pk_seq[0] == "by"
+        or ("by" in pk_parts and bool(pk_parts & (_PATIENT_SUBJ_PARTS | {"uhid", "mrn", "phone", "name", "naam"})))
+        or "map" in pk_parts
+        or "index" in pk_parts
     ):
-        if not (pk_parts & _CLINICAL_ONLY_PARTS) and not (pk_parts & _FACILITY_PARTS):
+        non_collection_clin = _CLINICAL_ONLY_PARTS - {"results", "result", "visits", "diagnosis"}
+        if not (pk_parts & non_collection_clin) and not (pk_parts & _FACILITY_PARTS):
             schema.is_person_map_dict = True
 
     scalar_keys: list[str] = []
@@ -872,11 +893,8 @@ def _scrub_meta_path_value(path_str: str) -> str:
             out.append(f"{stem}{ext}")
             continue
         # Scrub identifier cores inside path segments
-        cleaned_stem = re.sub(
-            r"(?:[A-Z]{2,6}/\d{2,4}/\d{3,}|[A-Z]{2,6}-\d{4,}|[A-Z]{2,6}\d{2,4}-\d{3,}|[A-Z]{2,6}-[A-Z]{2,4}-\d{3,}|[A-Z]{2,5}-\d{2,4}-\d{3,}|[A-Z]{2,5}\d{5,}|[A-Z]{2,6}-\d{2,4}-\d{4,}|[6-9]\d{9}|\d{5,})",
-            "[MRN]",
-            cleaned_stem,
-        )
+        cleaned_stem = _EMBEDDED_MRN_RE.sub("[MRN]", cleaned_stem)
+        cleaned_stem = re.sub(r"(?:(?<![\dA-Za-z])[6-9]\d{9}(?!\d)|\d{5,})", "[MRN]", cleaned_stem)
         rem_parts = [
             p for p in re.split(r"[_\-\s]+", cleaned_stem)
             if p and p != "[MRN]" and p.casefold() not in {"na", "n/a", "none", "null", "unknown", "unk"}
@@ -1016,6 +1034,12 @@ def _classify_scalar_by_value_and_key(val: Any, key: str, parent_key: str) -> st
     if _RE_LOCALITY_VAL.match(ns):
         return "LOCALITY"
 
+    # Envelope / operator / account fields holding a person name (e.g. operator_account) -> scrub
+    key_parts = set(split_key_parts(key))
+    if (key_parts & {"operator", "account", "verifier", "uploader", "reviewer", "entered"}) and not ns.startswith(("Dr.", "Dr ", "डॉ")):
+        if _looks_like_person_name(ns, allow_synthetic_canary=True):
+            return "PATIENT_NAME"
+
     return hint
 
 
@@ -1058,28 +1082,67 @@ def sanitize_header_or_key(
             stats["EMAIL"] = stats.get("EMAIL", 0) + 1
         return "[EMAIL]"
 
-    # Compound headers containing MRNs and/or patient names (e.g. "<MRN> <FirstName>")
+    # Compound headers/keys containing MRNs, phones, and/or patient names (e.g. "<MRN> <FirstName>", "Verifier_Name_9350297559")
     out = s
-    out, n_mrn = re.subn(
-        r"(?:[A-Z]{2,6}/\d{2,4}/\d{3,}|[A-Z]{2,6}-\d{4,}|[A-Z]{2,6}\d{2,4}-\d{3,}|[A-Z]{2,6}-[A-Z]{2,4}-\d{3,}|[A-Z]{2,5}-\d{2,4}-\d{3,}|[A-Z]{2,5}\d{5,}|[A-Z]{2,6}-\d{2,4}-\d{4,})",
-        "[MRN]",
-        out,
-    )
+    out, n_mrn = _EMBEDDED_MRN_RE.subn("[MRN]", out)
     if n_mrn and stats is not None:
         stats["MRN"] = stats.get("MRN", 0) + n_mrn
+    out, n_ph = re.subn(r"(?<![\dA-Za-z])(?:\+?91[\s.\-]?)?[6-9]\d{9}(?!\d)", "[PHONE]", out)
+    if n_ph and stats is not None:
+        stats["PHONE"] = stats.get("PHONE", 0) + n_ph
 
-    # If remaining key sits under a person-indexed map (by_name, by_beneficiary, ...) or looks like a person name
-    rem = re.sub(r"\[[A-Z_]+\]", "", out).strip(" _-:")
+    has_id_anchor = (n_mrn > 0 or n_ph > 0)
+    is_person_map = allow_person_key or pk in ("by_name", "patient_map", "names", "results_by_patient")
+
+    # Strip known non-person prefix/suffix wrappers when extracting embedded names next to an ID/Phone or person map
+    rem = re.sub(r"\[[A-Z_]+\]", "", out).strip(" _-:()")
     rem_cand = rem.replace("_", " ") if "_" in rem else rem
-    if rem_cand and _looks_like_person_name(rem_cand, allow_synthetic_canary=(allow_person_key or pk in ("by_name", "patient_map", "names"))) and (
-        allow_person_key
-        or pk in ("by_name", "patient_map", "names")
-        or n_mrn > 0
-        or (len(rem_cand.split()) >= 2 and _norm_key(rem) not in _NON_PII_KEY_TOKENS)
-    ):
+
+    schema_parts = (
+        _PATIENT_SUBJ_PARTS | _NAME_PROP_PARTS | _ID_PROP_PARTS | _PHONE_PARTS
+        | _DATE_PROP_PARTS | _DOB_PROP_PARTS | _CLINICAL_ONLY_PARTS | _FACILITY_PARTS
+        | _REL_SUBJ_PARTS | _CLINICIAN_PARTS | _NON_PII_KEY_TOKENS
+        | {
+            "ep", "txt", "str", "num", "val", "line", "col", "row", "dt", "uid", "dx", "rx",
+            "age", "sex", "pin", "zip", "postal", "addr", "address", "domicile", "residence",
+            "gram", "sabha", "block", "tehsil", "taluka", "mandal", "village", "vill", "gaon",
+            "janpad", "district", "dist", "distt", "locality", "mohalla", "landmark", "house",
+            "area", "health", "abha", "aadhaar", "aadhar", "acc", "account", "completed",
+            "relation", "type", "code", "mdy", "dmy", "ymd", "clinical", "remark", "remarks",
+            "note", "notes", "comment", "comments", "info", "data", "detail", "details",
+            "flag", "count", "total", "export", "legacy", "bulk", "dump", "key", "map",
+            "by", "with", "for", "from", "to", "or", "and", "of", "in", "on", "at",
+        }
+    )
+    raw_rem_toks = [p for p in re.split(r"[_\-\s()]+", rem) if p]
+    has_allcaps_acronym = any(t.isupper() and len(t) >= 2 for t in raw_rem_toks)
+
+    if is_person_map and rem_cand and _looks_like_person_name(rem_cand, allow_synthetic_canary=True):
         out = out.replace(rem, "[PATIENT_NAME]")
         if stats is not None:
             stats["PATIENT_NAME"] = stats.get("PATIENT_NAME", 0) + 1
+    elif has_id_anchor and rem_cand:
+        # Scrub 2-3 capitalized person-name tokens inside compound headers like Verifier_Shashank_Chaturvedi_[PHONE]
+        role_wrappers = {"verifier", "operator", "reviewer", "entered", "by", "staff", "user", "patient", "ref"}
+        kept_parts = [p for p in raw_rem_toks if fold_latin_accents(p).casefold() not in role_wrappers]
+        cand_name = " ".join(kept_parts)
+        if kept_parts and _looks_like_person_name(cand_name, allow_synthetic_canary=True):
+            # Replace exact span matching kept_parts in `out` cleanly
+            pat = r"[_\-\s]+".join(re.escape(p) for p in kept_parts)
+            out = re.sub(pat, "[PATIENT_NAME]", out, count=1)
+            if stats is not None:
+                stats["PATIENT_NAME"] = stats.get("PATIENT_NAME", 0) + 1
+        elif _looks_like_person_name(rem_cand, allow_synthetic_canary=True):
+            out = out.replace(rem, "[PATIENT_NAME]")
+            if stats is not None:
+                stats["PATIENT_NAME"] = stats.get("PATIENT_NAME", 0) + 1
+    elif rem_cand and 2 <= len(rem_cand.split()) <= 3 and not has_allcaps_acronym:
+        rem_parts = split_key_parts(rem)
+        # Never corrupt genuine schema column names (Ep_Ref, Pt_Name, Reg_No, Domicile_Addr, Clinical_Remarks, Birth_MDY)
+        if not (set(rem_parts) & schema_parts) and _looks_like_person_name(rem_cand):
+            out = out.replace(rem, "[PATIENT_NAME]")
+            if stats is not None:
+                stats["PATIENT_NAME"] = stats.get("PATIENT_NAME", 0) + 1
 
     return out
 
@@ -1110,6 +1173,59 @@ def _put_unique_key(target: dict, key: str, val: Any) -> None:
 
 
 # --------------------------------------------------------------------------- table & JSON processors
+def _redact_ragged_cell(cell: Any, text_scrubber=None, stats: dict[str, int] | None = None) -> str:
+    """Safely classify and redact a cell on a ragged/shifted CSV row without trusting misaligned headers."""
+    s = str(cell)
+    ns = _norm_digits(s)
+    if not ns:
+        return s
+    # Keep short sex codes, age/sex strings, ICD-10, and clinical drug/dx/units intact for M3/utility
+    if ns.casefold() in _CLINICAL_OR_NON_NAME_WORDS or re.fullmatch(r"\d{1,3}\s*/\s*[MF]", ns, re.I) or _RE_ICD_OR_CODE.match(ns.upper()):
+        return s
+    if _RE_PIN.match(ns):
+        return redact_structured_value(s, "PIN", stats=stats)
+    if _RE_AADHAAR_MASKED.match(ns) or _RE_AADHAAR.match(ns):
+        return redact_structured_value(s, "AADHAAR", stats=stats)
+    if _RE_ABHA.match(ns):
+        return redact_structured_value(s, "ABHA_NUMBER", stats=stats)
+    if _RE_ABHA_ADDR.match(ns):
+        return redact_structured_value(s, "ABHA_ADDRESS", stats=stats)
+    if _RE_EMAIL.match(ns):
+        return redact_structured_value(s, "EMAIL", stats=stats)
+    if _RE_PAN.match(ns.upper()):
+        return redact_structured_value(s, "PAN", stats=stats)
+    if _RE_PHONE.match(ns) or _RE_PHONE_MASKED.match(ns):
+        return redact_structured_value(s, "PHONE", stats=stats)
+    if _RE_INSURANCE.match(ns):
+        return redact_structured_value(s, "INSURANCE_ID", stats=stats)
+    if _RE_MRN.match(ns):
+        return redact_structured_value(s, "MRN", stats=stats)
+    if _RE_DATE.match(ns):
+        yr = _extract_year(ns)
+        return redact_structured_value(s, "DOB", stats=stats) if (yr is not None and yr < 2018) else s
+    if _looks_like_address_composite(ns):
+        return redact_structured_value(s, "ADDRESS", stats=stats)
+    if _RE_HOUSE_VAL.match(ns):
+        return redact_structured_value(s, "HOUSE", stats=stats)
+    if _RE_LOCALITY_VAL.match(ns):
+        return redact_structured_value(s, "LOCALITY", stats=stats)
+    if _RE_LANDMARK_VAL.match(ns):
+        return redact_structured_value(s, "LANDMARK", stats=stats)
+    if _RE_REL_PREFIX.match(ns):
+        return redact_structured_value(s, "RELATIVE_NAME", stats=stats)
+    if re.fullmatch(r"(?i)(?:[SDWC]/[Oo]|verified|approved|pending|completed)", ns):
+        return s
+    if not ns.startswith(("Dr.", "Dr ", "डॉ")) and len(ns.split()) >= 2 and _looks_like_person_name(ns) and not _RE_CLINICAL_UNIT_VAL.search(ns):
+        # Verify clinical lexicon doesn't claim the whole phrase (when text_scrubber runs, check)
+        if text_scrubber is not None:
+            ts_out = text_scrubber(f"Patient: {ns}")
+            if "[PATIENT_NAME]" in ts_out:
+                return redact_structured_value(s, "PATIENT_NAME", stats=stats)
+        else:
+            return redact_structured_value(s, "PATIENT_NAME", stats=stats)
+    return text_scrubber(s) if text_scrubber is not None else s
+
+
 def process_table_rows(
     rows: list[list[str]],
     text_scrubber=None,
@@ -1124,23 +1240,111 @@ def process_table_rows(
 
     clean_header = sanitize_headers(header, stats=stats)
     clean_body: list[list[str]] = []
+    fn_idx = schema.first_name_cols[0] if schema.first_name_cols else None
+    ln_idx = schema.last_name_cols[0] if schema.last_name_cols else None
+
     for row in body:
         new_row: list[str] = []
-        for c_idx, cell in enumerate(row):
-            ctype = col_types[c_idx] if c_idx < n_cols else None
-            if ctype is not None:
-                cleaned = redact_structured_value(cell, ctype, stats=stats)
-                new_row.append(str(cleaned))
-            elif text_scrubber is not None:
-                new_row.append(text_scrubber(cell))
-            else:
-                new_row.append(cell)
+        if len(row) != n_cols:
+            orig_cells = [str(c).strip() for c in row]
+            for cell in row:
+                new_row.append(_redact_ragged_cell(cell, text_scrubber=text_scrubber, stats=stats))
+
+            # Prefix-aligned split First+Last columns (e.g. Given_Nm, Family_Nm before a split address column)
+            if (
+                fn_idx is not None
+                and ln_idx is not None
+                and max(fn_idx, ln_idx) < len(row)
+                and (fn_idx == 0 or col_types[0] != "MRN" or _RE_MRN.match(_norm_digits(orig_cells[0])))
+            ):
+                fv, lv = orig_cells[fn_idx], orig_cells[ln_idx]
+                if fv and lv and _looks_like_person_name(f"{fv} {lv}"):
+                    if not new_row[fn_idx].startswith("["):
+                        new_row[fn_idx] = redact_structured_value(fv, "PATIENT_NAME", stats=stats)
+                    if not new_row[ln_idx].startswith("["):
+                        new_row[ln_idx] = redact_structured_value(lv, "PATIENT_NAME", stats=stats)
+
+            # Fallback for unaligned adjacent single-token First+Last cells recognized together without prompting
+            if text_scrubber is not None:
+                for i in range(len(row) - 1):
+                    c1, c2 = orig_cells[i], orig_cells[i + 1]
+                    if (
+                        len(c1.split()) == 1
+                        and len(c2.split()) == 1
+                        and not (i + 2 < len(row) and _RE_PIN.match(_norm_digits(orig_cells[i + 2])))
+                        and not (new_row[i].startswith("[") and new_row[i + 1].startswith("["))
+                        and _looks_like_person_name(f"{c1} {c2}")
+                    ):
+                        comb_out = text_scrubber(f"{c1} {c2}")
+                        if comb_out == "[PATIENT_NAME]" or ("[" in comb_out and c1 not in comb_out and c2 not in comb_out):
+                            if not new_row[i].startswith("["):
+                                new_row[i] = redact_structured_value(c1, "PATIENT_NAME", stats=stats)
+                            if not new_row[i + 1].startswith("["):
+                                new_row[i + 1] = redact_structured_value(c2, "PATIENT_NAME", stats=stats)
+        else:
+            for c_idx, cell in enumerate(row):
+                ctype = col_types[c_idx] if c_idx < n_cols else None
+                if ctype is not None:
+                    # Safety guard: if an individual aligned-length cell actually looks like an embedded shifted PIN/ADDRESS in DISTRICT etc., let PIN scrub
+                    cleaned = redact_structured_value(cell, ctype, stats=stats)
+                    new_row.append(str(cleaned))
+                elif text_scrubber is not None:
+                    new_row.append(text_scrubber(cell))
+                else:
+                    new_row.append(cell)
         clean_body.append(new_row)
     return clean_header, clean_body
 
 
 def _is_fhir_bundle(data: Any) -> bool:
     return isinstance(data, dict) and data.get("resourceType") == "Bundle" and isinstance(data.get("entry"), list)
+
+
+def _scrub_url_query_params(url: str, text_scrubber=None, stats: dict[str, int] | None = None) -> str:
+    """Scrub PII/canaries/identifiers hidden in URL query strings (e.g. ?patient=Name%20Here&phone=...)."""
+    if "?" not in url or "=" not in url:
+        return url
+    sp = urllib.parse.urlsplit(url)
+    pairs = urllib.parse.parse_qsl(sp.query, keep_blank_values=True)
+    if not pairs:
+        return url
+    new_pairs: list[tuple[str, str]] = []
+    changed = False
+    for pk, pv in pairs:
+        pk_low = pk.casefold()
+        dec_v = urllib.parse.unquote_plus(pv).strip()
+        if not dec_v:
+            new_pairs.append((pk, pv))
+            continue
+        nv = dec_v
+        # Explicitly scrub known query parameter names or detected identifiers/person names
+        if any(w in pk_low for w in ("patient", "name", "pt", "person", "relative", "guardian")):
+            nv = "[PATIENT_NAME]"
+            if stats is not None:
+                stats["PATIENT_NAME"] = stats.get("PATIENT_NAME", 0) + 1
+        elif any(w in pk_low for w in ("phone", "tel", "mob", "contact")):
+            nv = "[PHONE]"
+            if stats is not None:
+                stats["PHONE"] = stats.get("PHONE", 0) + 1
+        elif any(w in pk_low for w in ("uhid", "mrn", "reg", "id")):
+            nv = "[MRN]"
+            if stats is not None:
+                stats["MRN"] = stats.get("MRN", 0) + 1
+        elif _RE_PHONE.match(_norm_digits(dec_v)):
+            nv = "[PHONE]"
+        elif _RE_MRN.match(_norm_digits(dec_v)):
+            nv = "[MRN]"
+        elif _looks_like_person_name(dec_v, allow_synthetic_canary=True):
+            nv = "[PATIENT_NAME]"
+        elif text_scrubber is not None:
+            nv = text_scrubber(dec_v)
+        if nv != dec_v:
+            changed = True
+        new_pairs.append((pk, nv))
+    if not changed:
+        return url
+    new_q = urllib.parse.urlencode(new_pairs, safe="[]")
+    return urllib.parse.urlunsplit((sp.scheme, sp.netloc, sp.path, new_q, sp.fragment))
 
 
 def _sanitize_fhir_bundle(bundle: dict, text_scrubber=None, stats: dict[str, int] | None = None) -> dict:
@@ -1150,10 +1354,13 @@ def _sanitize_fhir_bundle(bundle: dict, text_scrubber=None, stats: dict[str, int
     if isinstance(meta, dict):
         meta = dict(meta)
         src = meta.get("source")
-        if isinstance(src, str) and src.startswith("#"):
-            meta["source"] = "#redacted"
-            if stats is not None:
-                stats["MRN"] = stats.get("MRN", 0) + 1
+        if isinstance(src, str):
+            if src.startswith("#"):
+                meta["source"] = "#redacted"
+                if stats is not None:
+                    stats["MRN"] = stats.get("MRN", 0) + 1
+            elif "?" in src:
+                meta["source"] = _scrub_url_query_params(src, text_scrubber=text_scrubber, stats=stats)
         out["meta"] = meta
 
     new_entries = []
@@ -1176,7 +1383,7 @@ def _sanitize_fhir_bundle(bundle: dict, text_scrubber=None, stats: dict[str, int
                 res["text"] = dict(res["text"])
                 res["text"]["div"] = re.sub(
                     r">([^<]+)<",
-                    lambda m: ">" + _scrub_fhir_narrative(m.group(1), stats) + "<",
+                    lambda m: ">" + _scrub_fhir_narrative(m.group(1), stats, text_scrubber=text_scrubber) + "<",
                     div_txt,
                 )
             if isinstance(res.get("identifier"), list):
@@ -1335,8 +1542,19 @@ def _sanitize_fhir_bundle(bundle: dict, text_scrubber=None, stats: dict[str, int
     return out
 
 
-def _scrub_fhir_narrative(text: str, stats: dict[str, int] | None = None) -> str:
-    """Clean Patient.text.div narrative like 'Ravi Verma, 34 yrs, male, HOSP/27/001234'."""
+def _scrub_fhir_narrative(text: str, stats: dict[str, int] | None = None, text_scrubber=None) -> str:
+    """Clean Patient.text.div narrative like 'Ravi Verma, 34 yrs, male, HOSP/27/001234' or space-delimited HTML text."""
+    if "," not in text:
+        out = re.sub(
+            rf"^(\s*)([{_LU}{_DL}][{_LL}{_DL}.'\-]+(?:\s+[{_LU}{_DL}][{_LL}{_DL}.'\-]+){{1,3}})(?=\s+(?:DOB|Age|\d{{1,3}}\s*yrs?|male|female|M\b|F\b))",
+            lambda m: m.group(1) + ("[PATIENT_NAME]" if _looks_like_person_name(m.group(2), allow_synthetic_canary=True) else m.group(2)),
+            text,
+            flags=re.I,
+        )
+        out = re.sub(r"(?i)\bDOB\s+\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", "DOB [DOB]", out)
+        out = scrub_composite_address(out, stats)
+        return text_scrubber(out) if text_scrubber is not None else out
+
     parts = [p.strip() for p in text.split(",")]
     cleaned = []
     for idx, part in enumerate(parts):
@@ -1345,12 +1563,20 @@ def _scrub_fhir_narrative(text: str, stats: dict[str, int] | None = None) -> str
             cleaned.append("[MRN]")
             if stats is not None:
                 stats["MRN"] = stats.get("MRN", 0) + 1
-        elif idx == 0 and _looks_like_person_name(part):
+        elif re.match(r"(?i)^DOB\s+\d{4}[-/]\d{1,2}[-/]\d{1,2}$", ns):
+            cleaned.append("DOB [DOB]")
+            if stats is not None:
+                stats["DOB"] = stats.get("DOB", 0) + 1
+        elif idx == 0 and _looks_like_person_name(part, allow_synthetic_canary=True):
             cleaned.append("[PATIENT_NAME]")
             if stats is not None:
                 stats["PATIENT_NAME"] = stats.get("PATIENT_NAME", 0) + 1
+        elif idx == len(parts) - 1 and idx >= 2 and not re.search(r"(?i)(?:yrs?|male|female|years|\d)", ns) and re.fullmatch(rf"[{_LU}{_DL}][{_LL}{_DL}\s\-]{{2,35}}", ns):
+            cleaned.append("[VILLAGE]")
+            if stats is not None:
+                stats["VILLAGE"] = stats.get("VILLAGE", 0) + 1
         else:
-            cleaned.append(part)
+            cleaned.append(text_scrubber(part) if text_scrubber is not None else part)
     return ", ".join(cleaned)
 
 

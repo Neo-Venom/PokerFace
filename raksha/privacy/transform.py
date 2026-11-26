@@ -28,7 +28,7 @@ _AGE_LABELED_RE = re.compile(
     r"(?i)(\b(?:Age(?:/Sex)?|आयु)\s*[:\-]\s*)(\d{1,3})(\s*(?:Yrs?|वर्ष|Y))?(?:\s*/\s*([MF]|पुरुष|महिला))?"
 )
 _AGE_COMPACT_RE = re.compile(
-    r"\b(\d{1,3})(\s*)(?:(Yrs?\s*/\s*[MF])|(/\s*[MF]\b)|(Y\s*/\s*[MF]\b)|(वर्ष))"
+    r"\b(\d{1,3})(\s*)(?:(Yrs?\s*/\s*[MF])|(/\s*[MF]\b)|(Y\s*/\s*[MF]\b)|(वर्ष(?!ों)))"
 )
 _AGE_YRS_TEXT_RE = re.compile(r"(?i)(?<!x\s)(?<!back\s)\b(\d{1,3})(\s+yrs?\b)(?!\s*(?:back|ago))")
 _TEHSIL_TXT_RE = re.compile(
@@ -194,6 +194,42 @@ def apply_privacy_to_tabular(
         row = list(clean_row)
         row_changed = False
         orig_row = orig_body[r_idx] if r_idx < len(orig_body) else []
+        is_ragged = len(row) != n_cols or len(orig_row) != n_cols
+
+        if is_ragged:
+            row_mf = infer_month_first([str(x) for x in orig_row], header_or_rel_hint=rel)
+            sex_tokens = {"M", "F", "Male", "Female", "पुरुष", "महिला"}
+            for ci, cell in enumerate(row):
+                sval = str(cell)
+                orig_val = str(orig_row[ci]).strip() if ci < len(orig_row) else sval.strip()
+                if not orig_val:
+                    continue
+                m_as = re.match(r"^\s*(\d{1,3})\s*/\s*([MF]|Female|Male)\s*$", orig_val, re.I)
+                if m_as and not sval.startswith("["):
+                    a = int(m_as.group(1))
+                    if 0 <= a <= 115:
+                        band = format_truthful_age_band(a, plan.age_band_width, plan.top_age_cap)
+                        sx = m_as.group(2)[0].upper() if plan.keep_gender else "[GENDER]"
+                        row[ci] = f"{band}/{sx}"
+                        row_changed = True
+                        continue
+                if re.fullmatch(r"\d{1,3}", orig_val) and not sval.startswith("["):
+                    a = int(orig_val)
+                    has_adj_sex = (
+                        (ci > 0 and str(orig_row[ci - 1]).strip() in sex_tokens)
+                        or (ci + 1 < len(orig_row) and str(orig_row[ci + 1]).strip() in sex_tokens)
+                    )
+                    if 0 <= a <= 115 and has_adj_sex:
+                        row[ci] = format_truthful_age_band(a, plan.age_band_width, plan.top_age_cap)
+                        row_changed = True
+                        continue
+                shifted, c_dt = shift_date_str(sval, plan.shift_days, month_first=row_mf)
+                if c_dt:
+                    row[ci] = shifted
+                    row_changed = True
+            new_body.append(row)
+            gen_flags[r_idx] = row_changed
+            continue
 
         for ci, cell in enumerate(row):
             if ci >= n_cols or not str(cell).strip():

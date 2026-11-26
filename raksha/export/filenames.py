@@ -14,14 +14,22 @@ if TYPE_CHECKING:
     from raksha.detect.registry import AliasRegistry
 
 _B64_CAND_RE = re.compile(r"^[A-Za-z0-9+/]{24,}={0,2}$")
+_DOC_STEM_NON_NAMES = {
+    "report", "forward", "whatsapp", "nursing", "discharge", "summary", "protocol",
+    "census", "claims", "results", "patients", "bundle", "export", "visits", "admissions",
+    "hinglish", "hindi", "english", "note", "notes", "slip", "cbc", "lft", "rft", "kft",
+    "opd", "ipd", "rx", "dx", "lab", "scan", "scanned", "copy", "audit", "feed", "bulk",
+    "shifted", "legacy", "unicode", "cp1252", "regional", "diagnostics", "keyed", "patient",
+}
 _FILENAME_ID_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9])"
     r"(?!(?:report|forward|whatsapp|nursing|discharge|summary|protocol|census|claims|results|patients|bundle|export|visits)[-_])"
     r"("
-    r"[A-Za-z]{2,6}[-_]\d{2,4}[-_]\d{3,}"
-    r"|[A-Za-z]{2,6}[-_][A-Za-z]{2,4}[-_]\d{3,}"
-    r"|[A-Za-z]{2,6}\d{4}[-_]\d{3,}"
-    r"|[A-Za-z]{2,6}[-_]\d{5,}"
+    r"[A-Za-z]{2,6}[-_][A-Za-z0-9]{1,5}[-_]\d{3,}"
+    r"|[A-Za-z]{2,6}[-_][A-Za-z0-9]{2,8}[-_]\d{2,4}[-_]\d{3,}"
+    r"|[A-Za-z]{2,6}[-_]\d{2,4}[-_]\d{3,}"
+    r"|[A-Za-z]{2,6}\d{2,4}[-_]\d{3,}"
+    r"|[A-Za-z]{2,6}[-_]\d{4,}"
     r"|[A-Za-z]{2,4}\d{5,}"
     r"|(?:[6-9]\d{9})"
     r")(?![A-Za-z0-9])"
@@ -55,6 +63,23 @@ def sanitize_relative_path(
             lbl = "PHONE" if re.fullmatch(r"[6-9]\d{9}", m.group(1)) else "MRN"
             spans.append(Span(m.start(1), m.end(1), lbl, m.group(1), source="identifier"))
         spans.extend(registry.propose_for_filename(stem))
+        # When an ID/Phone anchor sits inside the filename (e.g. 7990055667_Celandine_Frostbourne_cbc.json),
+        # also catch adjacent multi-word Title-Case person names not matched cleanly by doc/clinical words.
+        if any(sp.label in ("PHONE", "MRN", "AADHAAR", "ABHA_NUMBER") for sp in spans):
+            from raksha.detect.structured import _looks_like_person_name
+
+            tokens_fn = [(m.group(0), m.start(), m.end()) for m in re.finditer(r"[^\s_\-/\\]+", stem)]
+            for i in range(len(tokens_fn)):
+                for win in (3, 2):
+                    if i + win > len(tokens_fn):
+                        continue
+                    sub = tokens_fn[i : i + win]
+                    words_sub = [t[0] for t in sub]
+                    if any(w.casefold() in _DOC_STEM_NON_NAMES or any(c.isdigit() for c in w) for w in words_sub):
+                        continue
+                    cand_s = " ".join(words_sub)
+                    if all(w and w[0].isupper() for w in words_sub) and _looks_like_person_name(cand_s):
+                        spans.append(Span(sub[0][1], sub[-1][2], "PATIENT_NAME", stem[sub[0][1] : sub[-1][2]], source="context"))
         merged = resolve_overlaps(spans)
 
         if merged:

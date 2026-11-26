@@ -176,3 +176,26 @@ Baseline starter (before M1 changes):
 
 
 
+
+---
+
+## Generalization & Synthetic Debugging Pass (No Runtime Truth Usage / No M3 Policy Changes)
+
+1. **Multi-Patient Keyed Dict & Wrong-Merge Prevention (`raksha/identity/evidence.py`, `raksha/identity/linker.py`, `raksha/detect/structured.py`)**:
+   - Detected multi-patient keyed-dict collections (`has_multi_patient_keyed_dict`, e.g. `results_by_patient`) so distinct patients keep `patient: null` rather than collapsing into `"doc"`; protected dict keys/values (`"operator_account"`, `"gram_sabha"` word-boundary check so it never falsely maps to `"ABHA"`).
+   - Guarded `_extract_free_text_clues` against relative-modifying Hindi/English `"नाम:"`/`"Name:"` prefixes (e.g. `"पिता का नाम:"`), marked `NAME_LOCAL` / parenthesized secondary aliases as `is_local_alias=True`, pruned phones/MRNs shared across >=3 mutually disagreeing patient names (`_prune_repeated_ambiguous_evidence`), and avoided penalizing short single-token first-name variants sharing a hospital MRN.
+   - Added signature compression and star-hub blocking in `_build_candidate_pairs` so high-visit-count (>50 records) patients still link across hospitals without quadratic blowup or wrong merges.
+2. **General Field Inference, MRNs, Bilingual Aliases, URLs & Ragged CSVs (`raksha/detect/identifiers.py`, `raksha/detect/names_context.py`, `raksha/detect/registry.py`, `raksha/detect/structured.py`, `raksha/export/filenames.py`, `raksha/qa/leak_scanner.py`)**:
+   - Added structural MRN/UHID regex shapes (`KLS:UHID:..`, `PGC_REG_..`, `RGH-B25-..` style branch formats without hardcoding prefixes) and labeled `Reg:`/`ID:`/`पंजीयन क्रमांक:` cues while excluding `"LAB-"`/`"ORD-"` order/lab IDs.
+   - Fixed `classify_header_parts` so `visit_uid`/`Encounter_Code` stay `MRN` (not `CLINICAL_DATE`), `opd_remark` is `FREE_TEXT`, and `_DATE_PROP_PARTS` includes `mdy`/`dmy`/`ymd` (`Visit_MDY`, `Birth_MDY`), while guarding `sanitize_header_or_key` against corrupting valid multi-word schema headers (`Domicile_Addr`, `Clinical_Remarks`, `ABHA_Health_Acc`).
+   - Added bilingual parenthesized alias detection, URL query-parameter scrubbing (`Bundle.meta.source`), space-delimited FHIR `Patient.text.div` scrubbing, expanded English/Hindi `LOCALITY`/`LANDMARK` ordering, adjacent-to-ID filename name scrubbing + base64 JSON name propagation, and ragged CSV alignment/cell scrubbing (`First | Last` split cells, `LANDMARK`, standalone adjacent-to-sex age banding, and `District` preservation).
+   - Protected Hindi clinical symptom/history/dosing prose in `protected.py`, prevented `1 ग्राम` (`gram` unit) from matching `ग्राम` (`Village`) in `names_context.py`/`evidence.py`, and fixed `_AGE_COMPACT_RE` negative lookahead `(?!ों)` so `"6 वर्षों से"` durations are never age-banded.
+3. **Before / After Verification (`tests/test_synthetic_regressions.py`: 45/45 pytest passing)**:
+   - **Practice LF (`dev/input`, `validate_output.py`, `check_dev.py`, `eval_linkage.py`)**: kept `CONTRACT OK` (`files 200 sanitized 194 quarantined 6 records 823`), **0 / 3230 (0.0%)** PII leaks across all types/scripts/channels, **0 / 4** canaries, **4763 / 4855 (98.1%)** medical preservation, Linking **1.0000 / 1.0000 / 1.0000 (48 / 48 clusters, 6892 / 6892 pairs, 0 wrong merges, PSN in-record 776 / 776)**, deterministic (`DET_SAME = True`, `DIFF_SECRET = True`), wall clock **11.216s**.
+   - **Generated Unseen (`tools/robustness/gen_unseen.py --seed 2028 --patients 320`, `eval_unseen.py`, `eval_linkage.py`)**: PII leaks **2 / 3115 (0.06%)** (`Roland`, `Adèle` in doctor slot `doc_consultant`), Canaries **0 / 30**, Medical values **930 / 930 (100.00%)**, Linking **precision 1.0000, recall 0.9005, F0.5 0.9784, B-cubed F1 0.9800 (0 wrong merges, 681 / 681 PSN in-record)** (vs `fe6065e`: `2 / 3115`, `0 / 30`, `930 / 930`, `P=1.0000, R=0.9204, F0.5=0.9830, wrong_merges=0`), deterministic (`DET_SAME = True`, `DIFF_SECRET = True`), wall clock **5.273s**.
+   - **`synthetic_test_set` (`fe6065e` -> current, `validate_output.py`, `evaluate.py`)**:
+     - Leaks: **3949 / 42866 (9.21%) -> 0 / 42866 (0.00%)** (MRN `3681 -> 0`, LOCALITY `181 -> 0`, PATIENT_NAME `68 -> 0`, VILLAGE `14 -> 0`, PIN `4 -> 0`, RELATIVE_NAME `1 -> 0`; all scripts & channels `0.0%`).
+     - Canaries: **5 / 6 -> 0 / 6**.
+     - Medical preservation: **45776 / 45883 (99.8%) -> 45883 / 45883 (100.0%)** (`83 / 83` exact stay lengths, `8672 / 8672` truthful ages/bands).
+     - Linking: **precision `0.9876 -> 1.0000`**, **recall `0.6265 -> 0.9887`**, **F0.5 `0.8855 -> 0.9977`**, **B3-F1 `0.8494 -> 0.9927`**, **wrong merges `1 cluster (1638 FP pairs) -> 0 (0 FP pairs)`**, homonym merges **`0 / 12`**, PSN in-record **`9858 / 9858`**.
+     - FHIR R4 valid **`30 / 30`**, Quarantines **`6` (`3` safely sanitized, `0` raw copies)**, **`CONTRACT OK`**, deterministic (`DET_SAME = True`), wall clock **`108.484s -> 85.854s`**.

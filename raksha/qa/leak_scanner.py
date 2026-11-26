@@ -241,6 +241,14 @@ def _rescrub_string_and_b64(
     summary.hits_ignored_context += ign
     if hits:
         return _apply_rescrub(val, hits), True
+
+    if "?" in val and "=" in val and ("http://" in val or "https://" in val):
+        from raksha.detect.structured import _scrub_url_query_params
+
+        u_clean = _scrub_url_query_params(val)
+        if u_clean != val:
+            return u_clean, True
+
     return val, changed
 
 

@@ -177,11 +177,18 @@ def score_pair(a: RecordEvidence, b: RecordEvidence) -> tuple[float, bool]:
     elif a.pins and b.pins and not vill_match:
         w -= 1.5
 
-    # Safety: if a strong exclusive ID matched, ignore mild spelling differences, but still keep hard conflicts
-    if strong_id_match and lvl == "disagree":
-        # Wait: same phone isn't strong_id_match; same Aadhaar/ABHA/MRN with two completely different names?
-        # Keep mild guard if DOB+Sex both conflict too
-        pass
+    # Guard: strong exclusive government IDs override minor name spelling mismatch,
+    # whereas non-government MRN/email alone cannot merge records whose full multi-token names disagree.
+    has_exclusive_govt_match = bool(
+        (a.aadhaars and b.aadhaars and not a.aadhaars.isdisjoint(b.aadhaars))
+        or (a.abhas and b.abhas and not a.abhas.isdisjoint(b.abhas))
+        or (a.pans and b.pans and not a.pans.isdisjoint(b.pans))
+    )
+    both_full_names = any(len(n.norm_tokens) >= 2 and not n.is_fragment_first_only for n in a.names) and any(
+        len(n.norm_tokens) >= 2 and not n.is_fragment_first_only for n in b.names
+    )
+    if strong_id_match and lvl == "disagree" and not has_exclusive_govt_match and both_full_names:
+        w -= 5.0
 
     return w, False
 
@@ -238,13 +245,58 @@ def _build_candidate_pairs(evidences: list[RecordEvidence]) -> set[tuple[int, in
             blocks[f"ph:{ph}"].append(idx)
 
     pairs: set[tuple[int, int]] = set()
-    for members in blocks.values():
-        if len(members) < 2 or len(members) > 50:
+    for bkey, members in blocks.items():
+        is_strong_blk = bkey.startswith(("aad:", "abh:", "pan:", "eml:", "ins:", "smrn:", "gmrn:"))
+        if len(members) < 2:
             continue
-        for i_pos in range(len(members)):
-            u = members[i_pos]
-            for j_pos in range(i_pos + 1, len(members)):
-                v = members[j_pos]
+        if is_strong_blk:
+            if len(members) <= 250:
+                target_members = members
+                for i_pos in range(len(target_members)):
+                    u = target_members[i_pos]
+                    for j_pos in range(i_pos + 1, len(target_members)):
+                        v = target_members[j_pos]
+                        if u != v:
+                            pairs.add((min(u, v), max(u, v)))
+            elif len(members) <= 2000:
+                # Star-hub connection from first 4 members so large repeated strong-ID histories still link
+                for i_pos in range(min(4, len(members))):
+                    u = members[i_pos]
+                    for j_pos in range(i_pos + 1, len(members)):
+                        v = members[j_pos]
+                        if u != v:
+                            pairs.add((min(u, v), max(u, v)))
+            continue
+
+        if len(members) <= 50:
+            target_members = members
+        else:
+            # Compress by strong-ID/MRN signature so high-visit-count patients (>50 rows) still bridge across datasets
+            seen_sigs: set[tuple] = set()
+            target_members = []
+            for idx_m in members:
+                ev_m = evidences[idx_m]
+                sig = (
+                    tuple(sorted(ev_m.aadhaars)),
+                    tuple(sorted(ev_m.abhas)),
+                    tuple(sorted(ev_m.pans)),
+                    tuple(sorted(ev_m.emails)),
+                    tuple(sorted(ev_m.insurances)),
+                    tuple(sorted(ev_m.global_mrns)),
+                    tuple(sorted(ev_m.scoped_mrns)),
+                )
+                if any(sig):
+                    if sig in seen_sigs:
+                        continue
+                    seen_sigs.add(sig)
+                target_members.append(idx_m)
+            if len(target_members) > 80:
+                continue
+
+        for i_pos in range(len(target_members)):
+            u = target_members[i_pos]
+            for j_pos in range(i_pos + 1, len(target_members)):
+                v = target_members[j_pos]
                 if u != v:
                     pairs.add((min(u, v), max(u, v)))
     return pairs

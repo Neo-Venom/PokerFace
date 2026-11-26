@@ -78,12 +78,12 @@ _HONORIFIC_SUFFIXES = {
 # --------------------------------------------------------------------------- name & address triggers
 _PATIENT_LABEL_RE = re.compile(
     rf"(?<!डॉ\.)(?<!Dr\.)(?i:"
-    rf"(?:Patient(?:'s)?|Pt\.?|Beneficiary|Client|Subject|Participant|Referral|लाभार्थी|रेफरल|संदर्भ|मरीज़|रोगी)"
-    rf"(?:[ \t]+(?:का[ \t]+नाम|नाम|नोट|विवरण|Name|Note|Details))?"
+    rf"(?:Patient(?:'s)?|Pt\.?|Beneficiary|Client|Subject|Participant|Referral|Mareez|Mareej|Mariz|Rogi|लाभार्थी|रेफरल|संदर्भ|मरीज़|रोगी)"
+    rf"(?:[ \t]+(?:ka[ \t]+naam|naam|का[ \t]+नाम|नाम|नोट|विवरण|Name|Note|Details))?"
     rf"|Name|नाम"
     rf")[ \t]*[:\-][ \t]*"
     rf"({_SLOT_SEQ}|[{_NL}][{_AL}]+,[ \t]*[{_NL}][{_AL}]+)"
-    rf"(?=[ \t]{{2,}}|[ \t]+(?i:Age|Sex|Gender|DOB|UHID|MRN|Reg|IPD|S/o|D/o|W/o|आयु|उम्र|लिंग|पंजीकरण|पिता|पति|मोबाइल)\b|[ \t]+(?![{_NL}])|[ \t]*[,;\.\(\)\n\r]|$)"
+    rf"(?=[ \t]{{2,}}|[ \t]+(?i:Age|Sex|Gender|DOB|UHID|MRN|Reg|IPD|S/o|D/o|W/o|आयु|उम्र|लिंग|पंजीकरण|पंजीयन|पिता|पति|मोबाइल)\b|[ \t]+(?![{_NL}])|[ \t]*[,;\.\(\)\|\n\r]|$)"
 )
 _PATIENT_UNDELIM_RE = re.compile(
     rf"(?<!डॉ\.)(?<!Dr\.)\b(?:Patient|Pt\.?)[ \t]+({_SLOT_SEQ})"
@@ -162,28 +162,29 @@ _INITIALS_NAME_RE = re.compile(
 # C/O ambiguity: scan candidate "C/O <phrase>" and resolve multi-token context
 _CARE_OF_CAND_RE = re.compile(r"(?i)(?<![KH]/)C[ \t]*/[ \t]*O[ \t]*:?[ \t]*([^\n\r;]+)")
 
-# Free-text address & village lines
+# Free-text address & village lines (LANDMARK matched before LOCALITY so 'near Neem Peepal Crossing' stays LANDMARK)
 _ADDRESS_LINE_RE = re.compile(
-    r"(?i)(?:Address(?:\s*\([^)]*\))?|पता)[ \t]*[:\-][ \t]*([^\n\r]+)"
+    r"(?i)(?:Address(?:\s*\([^)]*\))?|पता|निवासी(?:\s*ग्राम)?)[ \t]*[:\-][ \t]*([^\n\r]+)"
 )
 _VILLAGE_LINE_RE = re.compile(
-    r"(?i)(?:\bVill(?:age)?\.?|\bGram|ग्राम)[ \t]*[:\-][ \t]*([^\n\r,;]+)"
+    r"(?i)(?:(?:\bVill(?:age)?\.?|\bGram|निवासी[ \t]*ग्राम|ग्राम)[ \t]*[:\-]|(?<![0-9०-९][\s.])(?:\b(?:Gaon|Gram)|(?<![\w0-9०-९])ग्राम)[ \t]+)[ \t]*([^\n\r,;]+)"
 )
 
-# Address sub-components (English, residential quarters/colonies, and Devanagari)
+# Address sub-components (English, residential quarters/colonies/bazaars/mandis, and Devanagari)
 _FREE_ADDR_COMPONENTS: list[tuple[str, re.Pattern]] = [
     ("HOUSE", re.compile(r"(?i)\b(?:H\.?\s*No\.?|House(?:\s+No\.?)?|Makan\s+No\.?|Qtr\.?|Quarter|Flat(?:\s+No\.?)?|Plot(?:\s+No\.?)?|Door(?:\s+No\.?)?)[\s.\-#:/]*[\dA-Za-z/-]*\d[\dA-Za-z/-]*")),
     ("HOUSE", re.compile(r"मकान\s*(?:नं\.?|सं\.?)\s*[\dA-Za-z/-]+")),
+    ("LANDMARK", re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind|beside)\s+[^,\n]+")),
+    ("LANDMARK", re.compile(r"[^,\n]+?\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
     ("LOCALITY", re.compile(r"(?i)\bWard\s*(?:No\.?)?\s*\d+")),
     ("LOCALITY", re.compile(r"वार्ड\s*(?:नं\.?)?\s*\d+")),
     ("LOCALITY", re.compile(r"(?i)\bSector\s*[-#]?\s*[A-Za-z0-9]+(?:\s+(?:Colony|Phase|Extension|Enclave|Block))?")),
     ("LOCALITY", re.compile(r"(?i)\bMohalla\s+[^,\n]+")),
-    ("LOCALITY", re.compile(rf"\b[{_LU}][a-zA-Z0-9\u00DF-\u024F]*(?:\s+[{_LU}0-9][a-zA-Z0-9\u00DF-\u024F]*){{0,2}}\s+(?:Colony|Nagar|Vihar|Enclave|Puram|Extension|Basti|Tola|Layout)\b")),
+    ("LOCALITY", re.compile(rf"\b[{_LU}][{_LL}0-9]*(?:\s+[{_LU}0-9][{_LL}0-9]*){{0,2}}\s+(?:Colony|Nagar|Vihar|Enclave|Puram|Extension|Basti|Tola|Layout|Chowk|Bazaar|Bazar|Mandi|Ganj|Bagh|Sarai|Chauraha|Pura|Marg|Lane|Market|Phase|Block)\b")),
     ("LOCALITY", re.compile(r"मोहल्ला\s+[^,\n]+")),
-    ("LANDMARK", re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind|beside)\s+[^,\n]+")),
-    ("LANDMARK", re.compile(r"[^,\n]+?\s+(?:के\s+पास|के\s+पीछे|के\s+सामने)")),
+    ("LOCALITY", re.compile(rf"[{_DL}]+(?:\s+[{_DL}]+){{0,2}}\s+(?:मोहल्ला|टोला|बस्ती|कॉलोनी|नगर|विहार|बाज़ार|बाजार|मंडी|चौक|गली|गंज|बाग़|बाग|मार्ग)(?=\s*[,;\.\-\n\r]|$)")),
     ("VILLAGE", re.compile(r"(?i)\b(?:Vill\.?|Village|Gram)\s+[^,\n\-]+")),
-    ("VILLAGE", re.compile(r"ग्राम\s+[^,\n\-]+")),
+    ("VILLAGE", re.compile(r"(?<![0-9०-९][\s.])(?<![\w0-9०-९])ग्राम\s+[^,\n\-]+")),
     # Bare village name right before ", Tehsil ..." or ", तहसील ..."
     ("VILLAGE", re.compile(rf"(?<=,\s)(?!(?:H\.?\s*No|House|Makan|Qtr|Quarter|Flat|Plot|Ward|Sector|Mohalla|near|opp|Tehsil|Distt|C/O)\b)([{_NL}][^\n,]+?)(?=,\s*(?:Tehsil|तहसील)\b)", re.I)),
     ("PIN", re.compile(r"(?<!\d)[1-8]\d{5}(?!\d)")),
@@ -282,21 +283,36 @@ def detect_context_name_and_address_spans(
             return
         spans.append(Span(os_, oe_, label, text[os_:oe_], source=src))
 
-    # 1. Explicit Patient Name labels & undelimited Patient/Pt. <Name>
+    # 1. Explicit Patient Name labels & undelimited Patient/Pt. <Name> (+ parenthesized bilingual/honorific alias)
+    def _maybe_paren_alias(match_end: int, lbl: str) -> None:
+        tail = norm_text[match_end:]
+        m_p = re.match(r"[ \t]*\(([^{}\(\)\n\r]{2,55})\)", tail)
+        if m_p:
+            inner = m_p.group(1).strip()
+            if (
+                not re.search(r"(?i)^(?:[SDWC]/[Oo]|Dr\.?|MD|MS|MBBS|Age|MRN|UHID|ID|tel|mob|ph|\d)", inner)
+                and _is_valid_name_candidate(inner, allow_synthetic_canary=True)
+            ):
+                p_start = match_end + m_p.start(1)
+                add_orig_span(p_start, p_start + len(m_p.group(1)), lbl)
+
     for m in _PATIENT_LABEL_RE.finditer(norm_text):
         cand = m.group(1).strip()
         if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
             add_orig_span(m.start(1), m.start(1) + len(cand), "PATIENT_NAME")
+            _maybe_paren_alias(m.end(1), "PATIENT_NAME")
     for m in _PATIENT_UNDELIM_RE.finditer(norm_text):
         cand = m.group(1).strip()
         if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
             add_orig_span(m.start(1), m.start(1) + len(cand), "PATIENT_NAME")
+            _maybe_paren_alias(m.end(1), "PATIENT_NAME")
 
     # 2. Explicit Relative labels (delimited, undelimited Attendant/Caretaker, and S/o inline)
     for m in _REL_LABEL_RE.finditer(norm_text):
         cand = m.group(1).strip()
         if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
             add_orig_span(m.start(1), m.start(1) + len(cand), "RELATIVE_NAME")
+            _maybe_paren_alias(m.end(1), "RELATIVE_NAME")
     for m in _REL_UNDELIM_RE.finditer(norm_text):
         cand = m.group(1).strip()
         if _is_valid_name_candidate(cand, allow_synthetic_canary=True):
@@ -327,9 +343,11 @@ def detect_context_name_and_address_spans(
             label = "RELATIVE_NAME" if any(w in m.group(0).casefold() for w in ("bhaiya", "chacha", "chachu", "mama", "mami", "mausi")) else "PATIENT_NAME"
             add_orig_span(m.start(), m.end(), label)
 
-    # 6. WhatsApp sender names
+    # 6. WhatsApp sender names (skip generic hospital roles like Duty Sister / Staff Nurse)
     for m in _WHATSAPP_SENDER_RE.finditer(norm_text):
         cand = m.group(1).strip()
+        if cand.casefold() in {"duty sister", "ward boy", "staff nurse", "duty doctor", "front desk", "reception", "admin"}:
+            continue
         if _is_valid_name_candidate(cand):
             add_orig_span(m.start(1), m.start(1) + len(cand), "RELATIVE_NAME")
 

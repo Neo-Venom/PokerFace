@@ -399,6 +399,23 @@ def build_alias_registry(
                                 reg.add_identifier(vs, ft)
                             elif ft == "VILLAGE":
                                 reg.add_village(vs)
+                            elif len(vs) >= 24 and not isinstance(v, (dict, list)):
+                                from raksha.export.filenames import sanitize_base64_string
+
+                                def _reg_from_b64(dec_txt: str) -> str:
+                                    nv_b = build_normalized_view(dec_txt)
+                                    prot_b = clinical_lexicon.find_spans(dec_txt, view=nv_b) if clinical_lexicon is not None else []
+                                    for sp in resolve_pii_vs_protected(
+                                        detect_context_name_and_address_spans(dec_txt, view=nv_b, protected_spans=prot_b),
+                                        prot_b,
+                                    ):
+                                        if sp.label in ("PATIENT_NAME", "RELATIVE_NAME"):
+                                            toks_b = [t for t in sp.text.strip().split() if len(t) >= 2]
+                                            if len(toks_b) >= 2:
+                                                reg.add_person_name(sp.text, role="relative" if sp.label == "RELATIVE_NAME" else "patient")
+                                    return dec_txt
+
+                                sanitize_base64_string(vs, _reg_from_b64)
                     elif isinstance(node, list):
                         for it in node:
                             if isinstance(it, (dict, list)):

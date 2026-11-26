@@ -94,15 +94,17 @@ _INSURANCE_PATTERNS = [
     re.compile(r"\bPOL/\d{2,4}/\d{4,}\b", re.I),
 ]
 _MRN_PATTERNS = [
-    re.compile(r"\b[A-Z]{2,6}/\d{2,4}/\d{3,}\b"),          # e.g. HOSP/26/001234
-    re.compile(r"\b[A-Z]{2,6}-\d{4,}\b"),                  # e.g. HOSP-0012345
-    re.compile(r"\b[A-Z]{2,6}\d{2,4}-\d{3,}\b"),             # e.g. HOSP2026-001234 / NVP27-110421
-    re.compile(r"\b[A-Z]{2,6}-[A-Z]{2,4}-\d{3,}\b"),       # e.g. HOSP-IPD-00123
-    re.compile(r"\b[A-Z]{2,5}-\d{2,4}-\d{3,}\b"),          # e.g. IPD-2026-00123
-    re.compile(r"\b[A-Z]{2,5}\d{5,}\b"),                   # e.g. ADM000123
+    re.compile(r"\b[A-Z]{2,6}(?:/[A-Z]{1,6})?/\d{2,4}/\d{3,}\b"),  # e.g. HOSP/26/001234, NVJ/OP/25/722967
+    re.compile(r"\b[A-Z]{2,6}:[A-Z0-9]{2,8}:[A-Z0-9]{1,8}:\d{3,}\b"),  # e.g. KLS:UHID:25:18763
+    re.compile(r"\b[A-Z]{2,6}_[A-Z0-9]{2,8}_\d{2,4}_\d{3,}\b"),       # e.g. PGC_REG_25_851282
+    re.compile(r"\b[A-Z]{2,6}-[A-Z0-9]{1,5}-\d{3,}\b"),             # e.g. RGH-B25-639176, HOSP-IPD-00123
+    re.compile(r"\b[A-Z]{2,6}-\d{4,}\b"),                           # e.g. HOSP-0012345, ZQ-901827
+    re.compile(r"\b[A-Z]{2,6}\d{2,4}-\d{3,}\b"),                      # e.g. HOSP2026-001234, NVP27-110421
+    re.compile(r"\b[A-Z]{2,5}\d{5,}\b"),                            # e.g. ADM000123
 ]
 _LABELED_MRN_RE = re.compile(
-    r"(?i)(?:\bUHID|\bMRN|\bReg\.?\s*No\.?|\bIPD\s*No\.?|पंजीकरण\s*सं\.?|आईपीडी\s*सं\.?)\s*[:#]\s*([A-Z0-9][A-Z0-9/\-]{3,24})"
+    r"(?i)(?:\bUHID|\bMRN|\bReg\.?(?:\s*No\.?)?|\bIPD(?:\s*No\.?)?|\bID|पंजीकरण\s*(?:सं\.?|क्रमांक)|पंजीयन\s*(?:सं\.?|क्रमांक)|आईपीडी\s*(?:सं\.?|क्रमांक))"
+    r"\s*(?:[:#]\s*|\s+(?=[A-Z]{2,}[-/:_0-9]))([A-Z0-9][A-Z0-9/:_\-]{4,28})"
 )
 _DOB_LINE_RE = re.compile(
     r"(?i)(?:\bDOB|\bDate\s+of\s+Birth|\bBirth\s+Date|जन्म\s*तिथि)\s*[:\-]\s*(\d{1,4}[./\-]\d{1,2}[./\-]\d{1,4})"
@@ -112,8 +114,8 @@ _PIN_CONTEXT_RE = re.compile(
     re.I,
 )
 
-# Exclusions for MRN regex (billing/encounter/clinical codes that are not patient UHID/MRN)
-_MRN_PREFIX_EXCLUDE = ("BL/", "OPD/", "LOINC", "ICD")
+# Exclusions for MRN regex (billing/encounter/order/clinical codes that are not patient UHID/MRN)
+_MRN_PREFIX_EXCLUDE = ("BL/", "OPD/", "LOINC", "ICD", "LAB-", "ORD-")
 
 
 def derive_id_patterns_from_values(mrn_values: list[str]) -> list[re.Pattern]:
