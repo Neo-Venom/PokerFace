@@ -7,3 +7,6 @@ venv/
 *.tmp
 out*/
 quarantine_vault/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

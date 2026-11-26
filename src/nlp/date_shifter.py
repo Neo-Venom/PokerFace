@@ -220,7 +220,41 @@ def shift_dates_in_text(
         parts.append(repl)
         pos = me
     parts.append(text[pos:])
-    return "".join(parts)
+    return _shift_hindi_month_dates("".join(parts), delta_days, eff_anchor)
+
+
+_HI_MONTHS = {
+    "जनवरी": 1, "फ़रवरी": 2, "फरवरी": 2, "मार्च": 3, "अप्रैल": 4, "अप्रेल": 4, "मई": 5, "जून": 6,
+    "जुलाई": 7, "अगस्त": 8, "सितंबर": 9, "सितम्बर": 9, "अक्टूबर": 10, "अक्तूबर": 10,
+    "नवंबर": 11, "नवम्बर": 11, "दिसंबर": 12, "दिसम्बर": 12,
+}
+_HI_MONTH_OUT = ["", "जनवरी", "फ़रवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर"]
+_HI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+_HI_DATE_RE = re.compile(
+    r"(?<![\d०-९])([\d०-९]{1,2})\s+(" + "|".join(sorted(_HI_MONTHS, key=len, reverse=True)) +
+    r")(?:\s*,?\s*((?:19|20|१९|२०)[\d०-९]{2}))?(?![\d०-९])"
+)
+
+
+def _shift_hindi_month_dates(text: str, delta_days: int, anchor_year: int, _unused=None) -> str:
+    """Shift Devanagari month-name dates ("15 मार्च 2026", "१५ मार्च"), keeping the digit script."""
+    if not text or not any(ch in text for ch in "जफमअजुसनदि"):
+        return text
+
+    def _rep(m: re.Match) -> str:
+        d_s, mon_tok, y_s = m.group(1), m.group(2), m.group(3)
+        try:
+            day = int(d_s.translate(_HI_DIGITS))
+            yr = int(y_s.translate(_HI_DIGITS)) if y_s else anchor_year
+            nd = _shift_d(dt.date(yr, _HI_MONTHS[mon_tok], day), delta_days)
+        except (ValueError, KeyError):
+            return m.group(0)
+        deva = any("०" <= c <= "९" for c in d_s)
+        to = (lambda v: str(v).translate(str.maketrans("0123456789", "०१२३४५६७८९"))) if deva else str
+        out = f"{to(nd.day)} {_HI_MONTH_OUT[nd.month]}"
+        return f"{out} {to(nd.year)}" if y_s else out
+
+    return _HI_DATE_RE.sub(_rep, text)
 
 
 def shift_compact_hl7_date(val: str, delta_days: int) -> str:
