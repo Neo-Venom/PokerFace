@@ -61,6 +61,25 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(maybe_rename_rel_path("misc/report.v2.txt", "a" * 64, kr, lambda s: False), ("misc/report.v2.txt", False))
 
 
+class TestLocaleIndependence(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "POSIX C-locale behaviour")
+    def test_devanagari_file_names_under_bare_c_locale(self) -> None:
+        import os
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            inp, out = Path(td) / "in" / "notes", Path(td) / "out"
+            inp.mkdir(parents=True)
+            (inp / "पर्ची_रमेश_कुमार.txt").write_text("मरीज़: रमेश कुमार\nदवा: Paracetamol 500 mg 1-0-1\n", encoding="utf-8")
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C", "LC_ALL": "C", "PYTHONUTF8": "0",
+                   "PYTHONCOERCECLOCALE": "0", "PYTHONIOENCODING": "ascii:strict", "RAKSHA_SECRET": "t"}
+            p = subprocess.run([sys.executable, str(ROOT / "main.py"), "--input", str(inp.parent), "--output", str(out)],
+                               env=env, capture_output=True, timeout=120)
+            self.assertEqual(p.returncode, 0, p.stderr[-300:])
+            names = [q.name for q in (out / "sanitized" / "notes").iterdir()]
+            self.assertTrue(names and all("रमेश" not in n for n in names), names)
+
+
 class TestOutputHygiene(unittest.TestCase):
     def test_formula_cells_are_neutralised_numbers_are_not(self) -> None:
         for cell in ("=CMD|' /C calc'!A0", "+SUM(1+1)", "-2+3+cmd", "@HYPERLINK(\"x\")", "\t=1+1"):
