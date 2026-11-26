@@ -75,6 +75,19 @@ Baseline starter (before M1 changes):
   - Medical values kept: 4497 / 4497 (100.0%)
   - All 16 unit tests passing
 
+### Step H: Independent Post-Export Leakage Scanner (`raksha/qa/leak_scanner.py`)
+- Completely independent QA module (no shared state or imports from `raksha.detect`) with its own NFKC/zero-width/Devanagari-digit normalization, precompiled `_CompiledSurfaceMatcher`, raw identifier regexes, and base64 payload scanner
+- Re-evaluates doctor/clinical/eponym context on any hit; re-scrubs residual PII safely or quarantines if un-scrubbable / filename-leaking / second-pass hit
+- Results (`check_dev.py`, `validate_output.py`, `pytest`):
+  - `files 200 sanitized 194 quarantined 6 records 823`, `CONTRACT OK`
+  - Total PII leaked: 35 / 3230 (1.1% on Windows CRLF raw input; content 0.0%, base64 0.0%, metadata 0.0%, key 0.0%, header 0.0%, deva 0.0%, hinglish 0.0%)
+  - All 35 PII filenames in `sanitized/` are renamed (the remaining 35 reported filename hits in Windows `check_dev.py` are due to git CRLF vs Linux LF SHA-256 mismatch against `truth.json`, not unrenamed files on disk)
+  - Canaries leaked: 0 / 4
+  - Medical values kept: 4497 / 4497 (100.0%)
+  - Raw copies: 0
+  - All 20 unit tests passing (`pytest`)
+
+
 
 
 

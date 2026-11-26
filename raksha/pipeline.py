@@ -26,6 +26,7 @@ from raksha.detect.registry import build_alias_registry
 from raksha.detect.structured import infer_column_type, process_table_rows, sanitize_json_data
 from raksha.export.filenames import sanitize_relative_path
 from raksha.ingest.loader import decode_bytes, load_json_safe, load_tabular, sniff_format
+from raksha.qa.leak_scanner import scan_and_remediate
 
 
 def peak_rss_mb() -> float:
@@ -259,5 +260,20 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
         "resources": {"peak_rss_mb": peak_rss_mb()},
     }
     (output_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(f"files {len(files_report)} sanitized {n_san} quarantined {len(files_report) - n_san} records {len(records)}")
+
+    # Step H: Independent post-export leakage scan (builds plain surface snapshot with no shared state)
+    qa_surfaces: dict[str, str] = {}
+    for surf, (lbl, _role) in alias_registry.full_phrases.items():
+        if len(surf) >= 5:
+            qa_surfaces[surf] = lbl
+    for core, lbl in alias_registry.id_cores.items():
+        if len(core) >= 6:
+            qa_surfaces[core] = lbl
+    qa_doctors = set(alias_registry.doctor_full_names)
+    scan_and_remediate(output_dir, known_surfaces=qa_surfaces, doctor_surfaces=qa_doctors)
+
+    # Re-read final report counts after QA remediation for honest stdout counts
+    final_report = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+    fc = final_report["counts"]
+    print(f"files {fc['files_total']} sanitized {fc['files_sanitized']} quarantined {fc['files_quarantined']} records {fc['records_processed']}")
     return 0
