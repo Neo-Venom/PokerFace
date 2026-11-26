@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass
 
+from raksha.detect.normalize import NormalizedView, build_normalized_view
+
 _DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
-_ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u00ad]")
 
 
 @dataclass(frozen=True)
@@ -16,20 +16,6 @@ class Span:
     label: str
     text: str
     source: str = "identifier"
-
-
-def to_digit_ascii_with_map(text: str) -> tuple[str, list[int]]:
-    """Convert Devanagari digits to ASCII while keeping a 1:1 offset map back to `text` (strips nothing, preserves length)."""
-    out_chars: list[str] = []
-    idx_map: list[int] = []
-    for i, ch in enumerate(text):
-        code = ord(ch)
-        if 0x0966 <= code <= 0x096F:
-            out_chars.append(chr(ord("0") + (code - 0x0966)))
-        else:
-            out_chars.append(ch)
-        idx_map.append(i)
-    return "".join(out_chars), idx_map
 
 
 # --------------------------------------------------------------------------- numeric context classifier
@@ -169,56 +155,63 @@ def derive_id_patterns_from_values(mrn_values: list[str]) -> list[re.Pattern]:
 def detect_identifier_spans(
     text: str,
     extra_mrn_patterns: list[re.Pattern] | None = None,
+    view: NormalizedView | None = None,
 ) -> list[Span]:
-    """Find identifier spans in `text` (handles Devanagari digits via 1:1 offset mapping)."""
+    """Find identifier spans in `text` via Step C normalized analysis view, mapped back to exact original offsets."""
     if not text:
         return []
-    # Keep 1:1 length parity when normalizing Devanagari digits so spans slice exact original substrings
-    norm_text, _ = to_digit_ascii_with_map(text)
+    nv = view if view is not None else build_normalized_view(text)
+    norm_text = nv.clean
     spans: list[Span] = []
 
-    # 1. ABHA address & Email (highest specificity, never numeric-ambiguous)
+    def add_span(ns: int, ne: int, label: str) -> None:
+        os_, oe_ = nv.map_clean_span(ns, ne)
+        if oe_ > os_:
+            spans.append(Span(os_, oe_, label, text[os_:oe_]))
+
+    # 1. ABHA address & Email
     for m in _ABHA_ADDR_RE.finditer(norm_text):
-        spans.append(Span(m.start(), m.end(), "ABHA_ADDRESS", text[m.start() : m.end()]))
+        add_span(m.start(), m.end(), "ABHA_ADDRESS")
     for m in _EMAIL_RE.finditer(norm_text):
         if not _ABHA_ADDR_RE.match(m.group(0)):
-            spans.append(Span(m.start(), m.end(), "EMAIL", text[m.start() : m.end()]))
+            add_span(m.start(), m.end(), "EMAIL")
 
     # 2. PAN
     for m in _PAN_RE.finditer(norm_text):
-        spans.append(Span(m.start(), m.end(), "PAN", text[m.start() : m.end()]))
+        add_span(m.start(), m.end(), "PAN")
 
     # 3. Insurance IDs
     for rx in _INSURANCE_PATTERNS:
         for m in rx.finditer(norm_text):
-            spans.append(Span(m.start(), m.end(), "INSURANCE_ID", text[m.start() : m.end()]))
+            add_span(m.start(), m.end(), "INSURANCE_ID")
 
     # 4. ABHA 14-digit (before 12-digit Aadhaar and 10-digit phone!)
     for m in _ABHA_NUM_RE.finditer(norm_text):
         if not is_clinical_numeric_context(norm_text, m.start(), m.end(), "ABHA_NUMBER"):
-            spans.append(Span(m.start(), m.end(), "ABHA_NUMBER", text[m.start() : m.end()]))
+            add_span(m.start(), m.end(), "ABHA_NUMBER")
 
     # 5. Masked Aadhaar & Full Aadhaar (12-digit)
     for m in _AADHAAR_MASKED_RE.finditer(norm_text):
-        spans.append(Span(m.start(), m.end(), "AADHAAR_MASKED", text[m.start() : m.end()]))
+        add_span(m.start(), m.end(), "AADHAAR_MASKED")
     for m in _AADHAAR_FULL_RE.finditer(norm_text):
-        # Skip if already inside an ABHA 14-digit span
-        if any(s.start <= m.start() and m.end() <= s.end for s in spans):
+        os_, oe_ = nv.map_clean_span(m.start(), m.end())
+        if any(s.start <= os_ and oe_ <= s.end for s in spans):
             continue
         if not is_clinical_numeric_context(norm_text, m.start(), m.end(), "AADHAAR"):
-            spans.append(Span(m.start(), m.end(), "AADHAAR", text[m.start() : m.end()]))
+            add_span(m.start(), m.end(), "AADHAAR")
 
     # 6. Phones (+91, 0-prefix, spaces, dashes, Devanagari digits, extensions, masked)
     for rx in _PHONE_PATTERNS:
         for m in rx.finditer(norm_text):
-            if any(s.start <= m.start() and m.end() <= s.end for s in spans):
+            os_, oe_ = nv.map_clean_span(m.start(), m.end())
+            if any(s.start <= os_ and oe_ <= s.end for s in spans):
                 continue
             if not is_clinical_numeric_context(norm_text, m.start(), m.end(), "PHONE"):
-                spans.append(Span(m.start(), m.end(), "PHONE", text[m.start() : m.end()]))
+                add_span(m.start(), m.end(), "PHONE")
     for m in _LABELED_PHONE_RE.finditer(norm_text):
-        s0, e0 = m.start(1), m.end(1)
-        if not any(s.start <= s0 and e0 <= s.end for s in spans):
-            spans.append(Span(s0, e0, "PHONE", text[s0:e0]))
+        os_, oe_ = nv.map_clean_span(m.start(1), m.end(1))
+        if not any(s.start <= os_ and oe_ <= s.end for s in spans):
+            add_span(m.start(1), m.end(1), "PHONE")
 
     # 7. MRN / UHID / IPD (built-in + corpus-derived + labeled)
     for rx in _MRN_PATTERNS + (extra_mrn_patterns or []):
@@ -226,24 +219,24 @@ def detect_identifier_spans(
             val = m.group(0)
             if val.startswith(_MRN_PREFIX_EXCLUDE):
                 continue
-            if any(s.start <= m.start() and m.end() <= s.end for s in spans):
+            os_, oe_ = nv.map_clean_span(m.start(), m.end())
+            if any(s.start <= os_ and oe_ <= s.end for s in spans):
                 continue
-            # Avoid matching insurance IDs as MRN
             if any(irx.match(val) for irx in _INSURANCE_PATTERNS):
                 continue
-            spans.append(Span(m.start(), m.end(), "MRN", text[m.start() : m.end()]))
+            add_span(m.start(), m.end(), "MRN")
     for m in _LABELED_MRN_RE.finditer(norm_text):
-        s0, e0 = m.start(1), m.end(1)
-        if not any(s.start <= s0 and e0 <= s.end for s in spans):
-            spans.append(Span(s0, e0, "MRN", text[s0:e0]))
+        os_, oe_ = nv.map_clean_span(m.start(1), m.end(1))
+        if not any(s.start <= os_ and oe_ <= s.end for s in spans):
+            add_span(m.start(1), m.end(1), "MRN")
 
     # 8. Labeled DOB & Address PIN
     for m in _DOB_LINE_RE.finditer(norm_text):
-        spans.append(Span(m.start(1), m.end(1), "DOB", text[m.start(1) : m.end(1)]))
+        add_span(m.start(1), m.end(1), "DOB")
     for m in _PIN_CONTEXT_RE.finditer(norm_text):
         s0, e0 = m.start(1), m.end(1)
         if not is_clinical_numeric_context(norm_text, s0, e0, "PIN"):
-            spans.append(Span(s0, e0, "PIN", text[s0:e0]))
+            add_span(s0, e0, "PIN")
 
     return resolve_overlaps(spans)
 

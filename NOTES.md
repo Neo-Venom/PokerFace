@@ -36,4 +36,13 @@ Baseline starter (before M1 changes):
   - Medical values kept: 4855 / 4855 (100.0%)
   - Raw copies: 0
 
+### Step C: Normalization & Transliteration with Offset Maps
+- NFC + zero-width removal (`\u200b`, `\u200c`, `\u200d`, `\ufeff`, `\u00ad`) + Devanagari digits -> ASCII + Cyrillic/Greek homoglyph folding
+- `indic-transliteration` (Devanagari <-> ITRANS/Latin with Hindi schwa deletion and nukta handling) + `phonetic_key` for cross-script matching
+- Dual representation (`NormalizedView`) with exact `clean_to_orig` and `folded_to_orig` span maps back to original text; integrated into `identifiers.py`
+- Results (`check_dev.py`):
+  - Total PII leaked: 536 / 3230 (16.6%), Medical values kept: 4855 / 4855 (100.0%), Canaries: 3 / 4
+  - All 8 unit tests passing (including zero-width, homoglyph, Devanagari digit, and cross-script offset mapping)
+
+
 
