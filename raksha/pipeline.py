@@ -15,14 +15,15 @@ from raksha.detect.identifiers import (
     derive_id_patterns_from_values,
     detect_identifier_spans,
     redact_spans,
-    resolve_overlaps,
 )
 from raksha.detect.names_context import (
     detect_context_name_and_address_spans,
-    find_protected_clinical_and_doctor_spans,
 )
 from raksha.detect.normalize import build_normalized_view
+from raksha.detect.protected import build_clinical_lexicon, resolve_pii_vs_protected
+from raksha.detect.registry import build_alias_registry
 from raksha.detect.structured import infer_column_type, process_table_rows, sanitize_json_data
+from raksha.export.filenames import sanitize_relative_path
 from raksha.ingest.loader import decode_bytes, load_json_safe, load_tabular, sniff_format
 
 
@@ -169,24 +170,28 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
             reason = str(exc) if isinstance(exc, ValueError) and str(exc).isidentifier() else type(exc).__name__
             ingested.append({"rel": rel, "sha": sha, "fmt": None, "payload": None, "error": reason})
 
-    # Derive hospital-specific MRN/UHID regexes from the ingested structured columns
+    # Derive hospital-specific MRN/UHID regexes, clinical lexicon, and run-level alias registry
     extra_mrn_patterns: list[re.Pattern] = derive_id_patterns_from_values(
         _collect_mrn_examples(parsed_items)
     )
+    clinical_lexicon = build_clinical_lexicon(parsed_items)
+    alias_registry = build_alias_registry(parsed_items)
 
     entity_stats: dict[str, int] = {}
 
     def scrub_free_text(txt: str) -> str:
         nv = build_normalized_view(txt)
-        prot = find_protected_clinical_and_doctor_spans(txt, view=nv)
+        prot = clinical_lexicon.find_spans(txt, view=nv)
         id_spans = detect_identifier_spans(txt, extra_mrn_patterns=extra_mrn_patterns, view=nv)
         ctx_spans = detect_context_name_and_address_spans(txt, view=nv, protected_spans=prot)
-        merged = resolve_overlaps(id_spans + ctx_spans)
+        reg_spans = alias_registry.propose_spans(txt, view=nv)
+        merged = resolve_pii_vs_protected(id_spans + ctx_spans + reg_spans, prot)
         return redact_spans(txt, merged, stats=entity_stats)
 
     # Pass 2: sanitize & write outputs
     files_report: list[dict] = []
     records: list[dict] = []
+    used_out_paths: set[str] = set()
     for item in ingested:
         rel = item["rel"]
         entry: dict = {"input_sha256": item["sha"]}
@@ -198,18 +203,26 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
         fmt = item["fmt"]
         payload = item["payload"]
         try:
+            out_rel = sanitize_relative_path(
+                rel,
+                input_sha256=item["sha"],
+                registry=alias_registry,
+                extra_mrn_patterns=extra_mrn_patterns,
+                used_paths=used_out_paths,
+                stats=entity_stats,
+            )
             if fmt in ("csv", "tsv"):
                 delim = "\t" if fmt == "tsv" else ","
-                result = _process_tabular(payload, delim, rel, records, text_scrubber=scrub_free_text, stats=entity_stats)
+                result = _process_tabular(payload, delim, out_rel, records, text_scrubber=scrub_free_text, stats=entity_stats)
             elif fmt == "json":
-                result = _process_json(payload, rel, records, text_scrubber=scrub_free_text, stats=entity_stats)
+                result = _process_json(payload, out_rel, records, text_scrubber=scrub_free_text, stats=entity_stats)
             else:
-                result = _process_text(payload, rel, records, text_scrubber=scrub_free_text)
+                result = _process_text(payload, out_rel, records, text_scrubber=scrub_free_text)
 
-            dest = san_dir / rel
+            dest = san_dir / out_rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(result, encoding="utf-8", newline="")
-            entry.update(output=f"sanitized/{rel}", status="sanitized")
+            entry.update(output=f"sanitized/{out_rel}", status="sanitized")
         except (ValueError, RecursionError, UnicodeError, csv.Error) as exc:
             reason = str(exc) if isinstance(exc, ValueError) and str(exc).isidentifier() else type(exc).__name__
             entry.update(output=None, status="quarantined", reason=reason)

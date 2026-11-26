@@ -44,18 +44,26 @@ Baseline starter (before M1 changes):
   - Total PII leaked: 536 / 3230 (16.6%), Medical values kept: 4855 / 4855 (100.0%), Canaries: 3 / 4
   - All 8 unit tests passing (including zero-width, homoglyph, Devanagari digit, and cross-script offset mapping)
 
-### Step D: Context-Aware Names in Free Text
-- Triggers for `Name:`, `Patient Name:`, `नाम:`, `मरीज़ का नाम:`, `S/o D/o W/o`, `Mr/Mrs/Smt/Shri/श्री/श्रीमती`, Hinglish suffixes (`ji`, `sahab`, `didi`, `behenji`, `bhai`, `bhaiya`, `amma`, `chachu`, `mama`), postpositions (`ka/ki`, `को ... दिन से`), WhatsApp sender lines, initials, surname-first, and free-text address/village triggers (including village-before-Tehsil)
-- Multi-token `C/O` ambiguity resolution (`C/O fever for 3 days` preserved vs `C/O Ramesh Kumar` redacted)
-- Doctor (`Dr./डॉ/Consultant/Prescriber`) preservation, disease eponym (`Parkinson's`, `Addison's`, `Bell's`, etc.) preservation, and `ASHA worker` preservation; FHIR `Patient.extension` relative/name scrubbing
+### Step E: Protected Clinical Spans + Explicit Span-Conflict Resolution
+- Dynamic `ClinicalLexicon` built from `clean/drug_formulary.csv`, `clean/lab_reference_ranges.csv`, and structured `rx`/`test` fields + base essential medicine/lab vocabulary
+- Regex patterns for dosage forms, drug suffixes, doses (`mg`, `mcg`, `ml`, `IU`, `%`, `°F/C`), frequencies (`BD`, `TID`, `1-0-1`, `1 0 1`, `x 5 days`), vitals (`150/90`, `BP`, `Pulse`, `SpO2`), labs with units, ICD-10 codes, `K/C/O`, `H/O`, clinical `C/O`, `Ward N (Dept)`, and EN/HI/Hinglish complaints
+- Explicit `resolve_pii_vs_protected` conflict resolver ensuring protected clinical and doctor spans always win overlaps (e.g. `103 F. Paracetamol` no longer mistaken for initial `F. Paracetamol`)
 - Results (`check_dev.py`):
   - Total PII leaked: 87 / 3230 (2.7%)
-  - Zero leaks (0.0%) on 13 / 16 entity types (only MRN 5.1%, PATIENT_NAME 4.0%, PHONE 1.9% — mainly in filenames and base64)
-  - By script: latin 2.7%, deva 0.0%, hinglish 6.3%
-  - By channel: content 0.9%, filename 100.0%, base64 100.0%, metadata 5.0%, key 0.0%, header 0.0%
   - Canaries leaked: 1 / 4
-  - Medical values kept: 4845 / 4855 (99.8%)
-  - Raw copies: 0
+  - Medical values kept: 4855 / 4855 (100.0%) — restored 100% clinical preservation!
+  - All 13 unit tests passing
+
+### Step F: Run-Level Alias Registry + Filenames + Base64 + clean/ Preservation
+- `AliasRegistry` collects high-confidence `patient`, `relative`, and `doctor` entities + `MRN`, `PHONE`, `VILLAGE` from structured columns/JSON/FHIR, expanding cross-script Devanagari<->Latin and `phonetic_key` variants (including reversed token order)
+- Proposes candidates in free text, filenames, and base64-decoded text attachments (`DocumentReference.content[].attachment.data`, `scanned_consent_form.json`), resolved through `resolve_pii_vs_protected` so doctors & clinical spans are never redacted
+- Deterministic collision-safe filename/path sanitization (`input_sha256[:8]` suffix when renamed)
+- Verified `clean/` files (`dengue_management_protocol.txt`, `drug_formulary.csv`, `lab_reference_ranges.csv`, `ward_census.json`) pass through unchanged (0 over-redaction)
+- Results (`check_dev.py`):
+  - Raw `dev/input` (`CONTRACT OK`): 36 / 3230 (1.1% leaked), content 0.0%, base64 0.0%, metadata 0.0%, key 0.0%, header 0.0%, deva 0.0%, hinglish 0.0%, canaries 0 / 4, medical values 4497 / 4497 (100.0%; note: Windows git CRLF checkout changes SHA-256 vs Linux `truth.json` on some renamed `.txt`/`.json` files)
+  - LF-normalized input check: 13 / 3230 (0.4% leaked), content 0.0%, base64 0.0%, metadata 0.0%, key 0.0%, header 0.0%, deva 0.0%, hinglish 0.0%, canaries 0 / 4, medical values 4671 / 4671 (100.0%)
+  - All 15 unit tests passing
+
 
 
 

@@ -5,6 +5,8 @@ import re
 import unicodedata
 from typing import Any
 
+from raksha.export.filenames import sanitize_base64_string
+
 # Devanagari -> ASCII digit mapping (used locally in Step A before Step C adds full offset-mapped normalization)
 _DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 
@@ -102,6 +104,9 @@ _PROSE_OR_CLINICAL_STOPWORDS = _CLINICAL_OR_NON_NAME_WORDS | {
     "next", "verify", "identity", "old", "card", "merged", "temp", "diet", "salt",
     "low", "diabetic", "advice", "morning", "evening", "condition", "discharged",
 }
+# Note: exclude "asha" from prose stopwords because "Asha" is a common Indian first name;
+# "ASHA worker" is protected in context/clinical spans instead.
+_PROSE_OR_CLINICAL_STOPWORDS.discard("asha")
 
 
 def _looks_like_person_name(val: str) -> bool:
@@ -730,9 +735,20 @@ def _sanitize_fhir_bundle(bundle: dict, text_scrubber=None, stats: dict[str, int
                         new_ids.append(item)
                 res["identifier"] = new_ids
 
-        elif rt == "DocumentReference" and text_scrubber is not None:
-            # Base64 attachments inside DocumentReference are handled if text_scrubber supports it (Step F / shared attachment hook)
-            pass
+        elif rt == "DocumentReference":
+            if isinstance(res.get("content"), list):
+                new_contents = []
+                for item in res["content"]:
+                    if isinstance(item, dict) and isinstance(item.get("attachment"), dict):
+                        it = dict(item)
+                        att = dict(it["attachment"])
+                        if isinstance(att.get("data"), str):
+                            att["data"] = sanitize_base64_string(att["data"], text_scrubber)
+                        it["attachment"] = att
+                        new_contents.append(it)
+                    else:
+                        new_contents.append(item)
+                res["content"] = new_contents
 
         ent_copy["resource"] = res
         new_entries.append(ent_copy)
@@ -834,8 +850,15 @@ def sanitize_json_data(data: Any, text_scrubber=None, stats: dict[str, int] | No
             ctype = forced_type or _classify_scalar_by_value_and_key(val, orig_key, parent_key)
             if ctype is not None:
                 cleaned = redact_structured_value(val, ctype, stats=stats)
-            elif isinstance(val, str) and text_scrubber is not None:
-                cleaned = text_scrubber(val)
+            elif isinstance(val, str):
+                # Decode & sanitize base64 text attachments (e.g. scanned_consent_form.json)
+                b64_checked = sanitize_base64_string(val, text_scrubber)
+                if b64_checked != val:
+                    cleaned = b64_checked
+                elif text_scrubber is not None:
+                    cleaned = text_scrubber(val)
+                else:
+                    cleaned = val
             else:
                 cleaned = val
 
