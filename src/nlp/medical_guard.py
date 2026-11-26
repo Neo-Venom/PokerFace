@@ -8,8 +8,37 @@ import json
 import re
 from typing import Any
 
-from data.gazetteers import CLINICAL_SYMPTOMS_AND_TERMS, HINGLISH_STOPWORDS, MEDICAL_EPONYMS
+from data.clinical_vocab import (
+    CLINICAL_ABBREVIATIONS,
+    DRUG_NAMES,
+    EPONYM_HEAD_NOUNS,
+    EPONYM_STRONG_HEADS,
+    NAMELIKE_EPONYMS,
+    STRONG_EPONYMS,
+    has_clinical_suffix,
+)
+from data.gazetteers import CLINICAL_SYMPTOMS_AND_TERMS, COMMON_INDIAN_NAMES, HINGLISH_STOPWORDS, MEDICAL_EPONYMS
 from src.models import FileEntry
+
+# Eponyms that are also given names / surnames / English words ("Wilson Varghese", "lie down") only count as
+# clinical inside an eponym frame; every other eponym root is clinical on its own.
+_ALL_EPONYM_ROOTS = {e.rstrip("'").removesuffix("'s") for e in MEDICAL_EPONYMS} | set(STRONG_EPONYMS)
+_BARE_EPONYMS = frozenset(e for e in (set(MEDICAL_EPONYMS) | set(STRONG_EPONYMS))
+                          if e.rstrip("'").removesuffix("'s") not in NAMELIKE_EPONYMS)
+_EPONYM_RX = re.compile(
+    r"(?i)\b(?:" + "|".join(sorted((re.escape(e) for e in STRONG_EPONYMS), key=lambda x: (-len(x), x))) + r")"
+    r"(?:['\u2019]s|s['\u2019])?(?:[ \t]+(?:" + EPONYM_HEAD_NOUNS + r"))?\b"
+    r"|(?i:\b(?:" + "|".join(sorted(NAMELIKE_EPONYMS)) + r"))(?:['\u2019]s|s['\u2019])?[ \t]+(?i:" + EPONYM_HEAD_NOUNS + r")\b"
+    # hyphenated multi-person eponyms: "Guillain-Barre syndrome", "Cheyne-Stokes respiration"
+    r"|\b[A-Z][a-z]+(?:-[A-Z][a-z]+)+(?:['\u2019]s)?[ \t]+(?i:" + EPONYM_HEAD_NOUNS + r")\b"
+)
+# "Fournier's gangrene", "Ludwig's angina": an unknown capitalised possessive in front of a disease-type head
+_POSSESSIVE_EPONYM_RX = re.compile(r"\b([A-Z][a-z]{2,20})(?:['\u2019]s|s['\u2019])[ \t]+(?i:" + EPONYM_STRONG_HEADS + r")\b")
+# Government health schemes are not people ("Ayushman Bharat", "Janani Suraksha Yojana")
+_SCHEME_RX = re.compile(
+    r"\bAyushman[ \t]+Bharat\b|\b(?:[A-Z][a-z]+[ \t]+){1,4}(?:Yojana|Yojna|Abhiyan|Abhiyaan)\b|\bPM-?JAY\b"
+)
+_NAMELIKE_LOWER = frozenset(NAMELIKE_EPONYMS)
 
 _SAFE_SPAN_PATTERNS = [
     # Doctor spans (stopping before bracket/comma/EOL or clinical verbs like 'reviewed', 'took')
@@ -28,10 +57,6 @@ _SAFE_SPAN_PATTERNS = [
     # Hospital Ward / Bed phrases (distinct from residential Ward 20 in addresses)
     re.compile(r"(?i)\bWard\s+\d+(?:\s*/\s*Bed\s*\d+)?\s*\([A-Za-z &]+\)"),
     re.compile(r"(?i)\bWard(?:/Bed)?\s*[:=]\s*Ward\s+\d+[^,\n]*"),
-    # Eponyms ("Addison's disease", "Bell's palsy", "Wilson's disease", "Parkinson's")
-    re.compile(
-        r"(?i)\b(?:addison|parkinson|alzheimer|hodgkin|cushing|graves|crohn|hashimoto|bell|wilson|down|kawasaki|raynaud|meniere|huntington|ewing|burkitt|whipple|guillain-barre|babinski|romberg|murphy|ryle|foley|koch|hansen|marfan|sjogren|tourette|paget|kaposi|turner|klinefelter|pott|barrett)(?:'s|s')?(?:\s+(?:disease|syndrome|palsy|crisis|sign|tube|catheter|reflex|lymphoma|sarcoma|triad|phenomenon|esophagus|fracture))?"
-    ),
     # Clinical K/C/O, H/O (stop at sentence/clause boundary so Attendant/relative isn't swallowed!)
     re.compile(r"(?i)\b(?:K/C/O|H/O)\s*[:\-]?\s*[^\n.;]+(?=(?:\s*(?:Attendant|S/o|W/o|D/o))|[.;\n]|$)"),
     # Doses, frequencies, vitals, labs, ICD10, LOINC, ranges
@@ -50,7 +75,9 @@ class MedicalGuard:
     """Maintains runtime-harvested clinical vocabulary and protects medical spans."""
 
     def __init__(self) -> None:
-        self.clinical_words: set[str] = set(CLINICAL_SYMPTOMS_AND_TERMS) | set(MEDICAL_EPONYMS)
+        self.clinical_words: set[str] = (
+            set(CLINICAL_SYMPTOMS_AND_TERMS) | set(_BARE_EPONYMS) | set(DRUG_NAMES) | set(CLINICAL_ABBREVIATIONS)
+        )
         self.hospital_names: set[str] = set()
         self.doctor_full_names: set[str] = set()
         self.doctor_tokens: set[str] = set()
@@ -147,6 +174,14 @@ class MedicalGuard:
             tag = "DOCTOR" if idx == 0 else "MEDICAL"
             for m in rx.finditer(text):
                 spans.append((m.start(), m.end(), tag))
+        for m in _EPONYM_RX.finditer(text):
+            spans.append((m.start(), m.end(), "MEDICAL"))
+        for m in _POSSESSIVE_EPONYM_RX.finditer(text):
+            if m.group(1).lower() not in COMMON_INDIAN_NAMES:
+                spans.append((m.start(), m.end(), "MEDICAL"))
+        if "Yoj" in text or "Ayushman" in text or "JAY" in text or "Abhiya" in text:
+            for m in _SCHEME_RX.finditer(text):
+                spans.append((m.start(), m.end(), "MEDICAL"))
         names = [n for n in self.doctor_full_names if len(n.split()) >= 2 and len(n) >= 6]
         if names and self._doc_rx_n != len(names):
             ordered = sorted(names, key=lambda x: (-len(x), x))
@@ -188,8 +223,10 @@ class MedicalGuard:
 
     def is_clinical_word(self, word: str) -> bool:
         lw = word.strip(".,:;()[]'\"").lower()
-        if lw in self.clinical_words or lw in HINGLISH_STOPWORDS or lw in MEDICAL_EPONYMS:
+        if lw.endswith(("'s", "’s")) and lw[:-2] in _ALL_EPONYM_ROOTS:
             return True
-        if lw.endswith("'s") and lw[:-2] in MEDICAL_EPONYMS:
+        if lw in _NAMELIKE_LOWER:
+            return False  # "Wilson", "Turner", "Bell": a person unless an eponym frame says otherwise
+        if lw in self.clinical_words or lw in HINGLISH_STOPWORDS or lw in _BARE_EPONYMS:
             return True
-        return False
+        return has_clinical_suffix(lw)

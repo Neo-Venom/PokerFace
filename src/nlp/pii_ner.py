@@ -49,7 +49,10 @@ _CO_REL_RE = re.compile(
 
 _HONORIFIC_AFTER_RE = re.compile(
     r"(?i)\b([A-Za-z\u0900-\u097f]{2,25}(?:[ \t]+[A-Za-z\u0900-\u097f]{2,25}){0,1})[ \t]+"
-    r"(?:ji|sahab|saab|sahib|didi|behenji|bhai|bhaiya|babu|amma|papa|chacha|chachu|garu|anna|akka|जी|साहब|दीदी)\b"
+    r"(?:ji|jee|sahab|saab|sahib|saheb|didi|behenji|bahenji|bhai|bhaiya|babu|amma|ammi|papa|chacha|chachu|chachi|garu|anna"
+    r"|akka|uncle|aunty|auntie|aunti|mausi|masi|mami|nani|dadi|bua|tai|tau|kaka|kaki|appa|thambi|chechi|chetta|chettan"
+    r"|ettan|boudi|mashi|bhau|bhabhi|bhabi|begum|miyan|mian"
+    r"|जी|साहब|साहेब|दीदी|बहनजी|भैया|भाई|बाबू|अम्मा|चाचा|चाची|मौसी|मामी|दादी|नानी|आंटी|अंकल|भाभी)(?![\wऀ-ॿ])"
 )
 
 # Mixed-script names ("लखन Lepcha", "Rajesh कुमार") are tried first, then Latin title-case names.
@@ -72,19 +75,23 @@ _AGE_ANCHOR_NAME_RE = re.compile(
 )
 
 # Relation noun + name: "brought by son Arivazhagan", "unke pati Zothanmawia ne", "Attendant Venkatesh Murmu"
+# (the trailing \b keeps "pati" from firing inside "IN-PATIENT" and "son" inside "SONOGRAPHY")
 _REL_NOUN_RE = re.compile(
     r"\b(?i:son|daughter|husband|wife|brother|sister|mother|father|nephew|niece|grandson|granddaughter|uncle|aunt"
-    r"|beta|beti|pati|patni|bhai|behen|bhabhi|devar|sasur|saas|chacha|mama|attendant|relative|guardian|caretaker|nok|kin)"
+    r"|beta|beti|bete|pati|patni|bhai|behen|bahen|bhabhi|devar|sasur|saas|chacha|mama|bahu|damad|jija"
+    r"|attendant|relative|guardian|caretaker|nok|kin)\b"
     r"(?:[ \t]+(?i:of|named|is))?[ \t]*[:\-]?[ \t]*(" + _TITLE_TOKS + r")"
-    r"|(?:पिता|पति|पत्नी|पुत्र|पुत्री|बेटा|बेटी|माता|भाई|बहन|अभिभावक|परिजन)[ \t]*[:\-]?[ \t]*(" + _DEVA_TOKS + r")"
+    r"|(?:पिता|पति|पत्नी|पुत्र|पुत्री|बेटा|बेटी|बेटे|बहू|दामाद|पोता|पोती|भतीजा|भांजा|माता|भाई|बहन|भाभी|देवर|ससुर|सास"
+    r"|अभिभावक|परिजन)(?![ऀ-ॿ])[ \t]*[:\-]?[ \t]*(" + _DEVA_TOKS + r")"
 )
 
 # "Bed 7: Kezhokhoto Sema", "Bed 12 pe Ravi Kumar"
 _BED_NAME_RE = re.compile(r"\b(?i:bed)(?:[ \t]*(?i:no)\.?)?[ \t]*\d{1,3}[ \t]*(?:[:\-–]|(?i:pe|par|par\b))[ \t]*(" + _TITLE_TOKS + r")")
 
-# "a 97-year-old man from Hirakhera Chhota" -> village
+# "a 97-year-old man from Hirakhera Chhota" -> village (an age number must precede: "Yr of Birth" is a label)
 _FROM_PLACE_RE = re.compile(
-    r"(?i:year[- ]old|yrs?|aged[ \t]+\d{1,3})[ \t]+(?i:man|woman|male|female|boy|girl|patient|lady|gentleman)?[ \t]*(?i:from|of)[ \t]+"
+    r"(?:\d{1,3}[ \t-]*(?i:year[- ]old|yrs?|years?)\b|(?i:aged)[ \t]+\d{1,3}(?:[ \t]*(?i:yrs?|years?))?)[ \t]+"
+    r"(?i:(?:man|woman|male|female|boy|girl|patient|lady|gentleman)[ \t]+)?(?i:from|of)[ \t]+"
     r"([A-Z][a-zA-Z]{2,24}(?:[ \t]+[A-Z][a-zA-Z]{2,24}){0,2})"
 )
 
