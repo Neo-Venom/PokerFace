@@ -87,6 +87,25 @@ Baseline starter (before M1 changes):
   - Raw copies: 0
   - All 20 unit tests passing (`pytest`)
 
+### Hardening Pass (Pre-M2)
+1. **Authentic LF SHA-256 verification**: Tested on a clean LF git clone (`core.autocrlf=false`):
+   - `files 200 sanitized 194 quarantined 6 records 823`, `CONTRACT OK`
+   - **0 / 3230 (0.0% leaked)** across all 16 entity types (`MRN 0/850`, `PATIENT_NAME 0/962`, `PHONE 0/308`, etc.), all 3 scripts (`latin/deva/hinglish 0.0%`), and all 6 hiding places (`content/filename/base64/metadata/key/header 0.0%`)
+   - **0 / 4** canaries; **4855 / 4855 (100.0%)** medical values preserved; **0** raw copies
+   - **Discrepancy explanation**: On Windows git with `core.autocrlf=true`, CRLF-converted files in `dev/input/` changed `input_sha256` in `report.json` relative to `truth.json`'s LF SHA-256 hashes, causing `check_dev.py`'s `renamed.get(f["sha256"])` lookup to fall back to the un-renamed `rel` path for those files (producing the illusory 24 MRN / 6 name / 5 phone filename leaks and 4497/4855 denominator drop). All 35 PII filenames in `sanitized/` were actually renamed.
+2. **Removed practice hardcoding**: Replaced hospital-specific MRN prefixes (`SNJ`, `JJH`, `DHH`, `ADM`), practice surnames in `registry.py`, practice canary/location names in `tools/train_crf.py` and `tests/`, and `"asha"` stopword hacks with general structural patterns; retrained `models/pii_crf.crfsuite` (`40.5 KB`).
+3. **Quarantine audit (6 vs baseline 5)**:
+   - Baseline 5: `empty_export.csv` (`empty_file`), `hl7_cda_discharge.xml` (`unsupported_format`), `photo_rx.jpg` (`unsupported_format`), `scanned_discharge.pdf` (`unsupported_format`), `truncated_opd.json` (`JSONDecodeError`).
+   - Ours 6: same 5 (checked extension before `decode_bytes` so `photo_rx.jpg` cleanly reports `unsupported_format`) + `misc/corrupt_bytes_note.txt` (`invalid_encoding`, raw `\xff\xfe\xc3(` mojibake bytes that starter's cp1252 fallback wrongly exported). All 6 are intentionally quarantined.
+4. **Secret validation**: `require_secret()` now accepts any non-empty `RAKSHA_SECRET` (`missing_secret` only when missing or `""`), verified with a 1-character secret test.
+5. **Additional general fix**: Added `Pt. <CapitalizedName>` prefix rule + unseen label triggers (`Beneficiary:`, `Caretaker:`, `Client Name:`) in `names_context.py` and parenthesized ID context in `train_crf.py`. All 21 unit tests pass.
+
+### Unseen Robustness Suite (`tools/robustness/`)
+- `gen_unseen.py`: Faker `en_IN`/`hi_IN` unseen dataset (11 files, 24 patients, 3 canaries, unseen MRN formats `KGMU/27/...`, `VHC-27-...`, `ARC27-...`, `SYD-...`, renamed multilingual headers, numeric JSON IDs, homonyms, doctor-patient name overlaps, base64, corrupt files, `clean/`).
+- `eval_unseen.py`: Determinism `True` (A==B), Diff-secret `False` (expected in M1 before M2/M3 pseudonyms & date shifts), Quarantined `{'invalid_encoding': 1, 'malformed_json': 1, 'empty_file': 1, 'unsupported_format': 1}`, PII leaked **0 / 267 (0.0%)** across all types/scripts/channels, Canaries **0 / 3**, Medical values **13 / 13 (100.0%)**.
+- `truth_free_scan.py`: **0 survivors** on both `.unseen_data` and LF practice `dev/input`.
+
+
 
 
 
