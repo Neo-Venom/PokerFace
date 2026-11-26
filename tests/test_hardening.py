@@ -42,6 +42,16 @@ class TestIngest(unittest.TestCase):
         parse_json_entry(e, Policy())
         self.assertEqual(e.status, "quarantined")
 
+    def test_unsafe_file_names_are_quarantined(self) -> None:
+        import tempfile
+        from src.ingest.router import scan_input_tree
+        with tempfile.TemporaryDirectory() as td:
+            for name in ("note;rm -rf tmp;.csv", "$(whoami)_opd.json", ".._.._etc_passwd.txt", "ok_notes.txt"):
+                (Path(td) / name).write_text("Patient Ravi Kumar 9876543210\n", encoding="utf-8")
+            got = {rel: e.status for _p, rel, e in scan_input_tree(Path(td))}
+        self.assertEqual(got.pop("ok_notes.txt"), "sanitized")
+        self.assertEqual(set(got.values()), {"quarantined"})
+
     def test_unsafe_file_names_are_never_re_emitted(self) -> None:
         kr = KeyRing(b"test-secret")
         for name in ("note;rm -rf tmp;.csv", "$(whoami)_opd.json", ".._.._etc_passwd_x.txt", "`id`_lab.csv"):

@@ -11,8 +11,7 @@ from src.security.keys import KeyRing
 
 _TEXT_EXTS = {".csv", ".tsv", ".json", ".jsonl", ".ndjson", ".txt", ".md", ".log", ".xml"}
 # File names carrying shell metacharacters, command substitution, traversal sequences or control
-# characters are an attack on whatever consumes the release: such a name is never re-emitted; the cleaned
-# file is exported under a keyed safe name instead (see maybe_rename_rel_path).
+# characters are an attack on whatever consumes the release: such files are quarantined, never re-emitted.
 _UNSAFE_NAME_RE = re.compile(r"[;`|<>$\x00-\x1f\x7f]|\.\.(?:[\\/_]|$)")
 # A free-text line longer than this is not a clinical note (buffer / ReDoS bombs): quarantined.
 _MAX_TEXT_LINE = 65536
@@ -173,6 +172,16 @@ def scan_input_tree(inp: Path) -> list[tuple[Path, str, FileEntry]]:
         raw = path.read_bytes()
         sha = hashlib.sha256(raw).hexdigest()
         ext = path.suffix.lower()
+        if any(_UNSAFE_NAME_RE.search(part) for part in Path(rel).parts):
+            entry = FileEntry(
+                input_sha256=sha,
+                rel_input_path=rel,
+                rel_output_path=None,
+                status="quarantined",
+                reason="unsafe_filename",
+            )
+            items.append((path, rel, entry))
+            continue
         if ext and ext not in _TEXT_EXTS:
             # Verify magic/unsupported binary before anything else
             _, err = decode_strict(raw)

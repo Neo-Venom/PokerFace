@@ -1,14 +1,15 @@
 """Constrained descending-score clustering preventing transitive over-merging."""
 from __future__ import annotations
 
+import dataclasses
 from collections import defaultdict
 
 from src.config import Policy
 from src.linkage.blocking import generate_candidate_pairs
 from src.linkage.evidence import RecordEvidence
 from src.linkage.scorer import (
-    _name_pair_match, compute_token_idf, detect_shared_family_phones, rel_conflict, rel_types_comparable, score_pair,
-    strong_shared,
+    _name_pair_match, compute_token_idf, detect_shared_family_phones, independent_strong_ids, rel_conflict,
+    rel_types_comparable, score_pair, strong_shared,
 )
 from src.security.keys import KeyRing
 
@@ -40,7 +41,7 @@ class ConstrainedClusters:
             x = self.parent[x]
         return x
 
-    def _can_merge(self, ra: int, rb: int, strong: bool = False) -> bool:
+    def _can_merge(self, ra: int, rb: int, strong: bool = False, two_ids: bool = False) -> bool:
         if self.genders[ra] and self.genders[rb] and not (self.genders[ra] & self.genders[rb]):
             return False
         if self.dobs[ra] and self.dobs[rb] and not (self.dobs[ra] & self.dobs[rb]):
@@ -53,7 +54,7 @@ class ConstrainedClusters:
             return False
         if self.pans[ra] and self.pans[rb] and not (self.pans[ra] & self.pans[rb]):
             return False
-        if self.byears[ra] and self.byears[rb]:
+        if self.byears[ra] and self.byears[rb] and not two_ids:   # a corrupted age cell must not split one UHID
             all_y = self.byears[ra] | self.byears[rb]
             if max(all_y) - min(all_y) > 4:
                 return False
@@ -69,13 +70,13 @@ class ConstrainedClusters:
                     return False
         return True
 
-    def merge(self, i: int, j: int, strong: bool = False) -> bool:
+    def merge(self, i: int, j: int, strong: bool = False, two_ids: bool = False) -> bool:
         ra, rb = self.find(i), self.find(j)
         if ra == rb:
             return False
         if ra > rb:
             ra, rb = rb, ra
-        if not self._can_merge(ra, rb, strong):
+        if not self._can_merge(ra, rb, strong, two_ids):
             return False
         self.parent[rb] = ra
         self.members[ra].extend(self.members.pop(rb))
@@ -90,6 +91,23 @@ class ConstrainedClusters:
         for rt, rl in self.rels_by_type.pop(rb).items():
             self.rels_by_type[ra].setdefault(rt, []).extend(rl)
         return True
+
+
+_SIG_FIELDS = [f.name for f in dataclasses.fields(RecordEvidence) if f.name not in ("uid", "entry", "record")]
+
+
+def _evidence_signature(ev: RecordEvidence) -> tuple:
+    """Hashable digest of everything score_pair / strong_shared read (bulk exports repeat identical evidence)."""
+    out = []
+    for name in _SIG_FIELDS:
+        v = getattr(ev, name)
+        if isinstance(v, (set, frozenset)):
+            out.append(frozenset(v))
+        elif isinstance(v, list):
+            out.append(tuple(v))
+        else:
+            out.append(v)
+    return tuple(out)
 
 
 AMBIGUITY_MARGIN = 1.5
@@ -140,16 +158,27 @@ def link_and_assign_pseudonyms(
 
     scored_edges: list[tuple[float, int, int]] = []
     thresh = policy.linkage_merge_threshold
+    sigs = [_evidence_signature(ev) for ev in evs]
+    memo: dict[tuple[tuple, tuple], float] = {}
     for i, j in cand_pairs:
-        sc = score_pair(evs[i], evs[j], shared_phones, idf)
+        key = (sigs[i], sigs[j])
+        sc = memo.get(key)
+        if sc is None:
+            sc = memo[key] = score_pair(evs[i], evs[j], shared_phones, idf)
         if sc >= thresh:
             scored_edges.append((sc, i, j))
 
     # Deterministic descending merge (tie-broken by record_uid)
     scored_edges.sort(key=lambda e: (-e[0], evs[e[1]].uid, evs[e[2]].uid))
     uf = ConstrainedClusters(evs)
+    flag_memo: dict[tuple[tuple, tuple], tuple[bool, bool]] = {}
     for _sc, i, j in scored_edges:
-        uf.merge(i, j, strong=strong_shared(evs[i], evs[j], shared_phones))
+        key = (sigs[i], sigs[j])
+        flags = flag_memo.get(key)
+        if flags is None:
+            flags = flag_memo[key] = (strong_shared(evs[i], evs[j], shared_phones),
+                                      independent_strong_ids(evs[i], evs[j], shared_phones) >= 2)
+        uf.merge(i, j, strong=flags[0], two_ids=flags[1])
 
     ambiguous = _ambiguous_records(evs, uf, scored_edges)
 

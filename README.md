@@ -99,7 +99,7 @@ published separately as the *Trap Gauntlet*.
 | Measure | Practice `dev` | Chaos s101 | Chaos s202 | Gauntlet A (tuned) | Gauntlet B (held out) | Gauntlet A21 (60 pt / 6k rows) | Hard H7 | Hard H11 (held out) |
 |---|---|---|---|---|---|---|---|---|
 | Contract (`validate_output.py`) | CONTRACT OK | CONTRACT OK | CONTRACT OK | CONTRACT OK | CONTRACT OK | CONTRACT OK | CONTRACT OK | CONTRACT OK |
-| **Local score /100** | **98.67** | **98.36** | **98.53** | **99.51** | **99.52** | **99.28** | **99.55** | **99.55** |
+| **Local score /100** | **98.67** | **98.36** | **98.53** | **99.51** | **99.52** | **99.18** | **99.53** | **99.53** |
 | Name-token leak rate (official key semantics) | 0.00% | 0.00% | 0.00% | 0.00% | 0.00% | 0.00% | 0.00% | 0.01% |
 | Direct IDs / full names surviving (decoded, all channels) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | Canaries found (incl. stdout/stderr/TMP) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -110,7 +110,7 @@ published separately as the *Trap Gauntlet*.
 | Length of stay preserved | n/a | n/a | n/a | 64/64 | 76/76 | 106/106 | 64/64 | 76/76 |
 | Formula cells / invalid JSON / unsafe names in release | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
 | Determinism (A == B) / new secret shares PSNs | yes / 0 | yes / 0 | yes / 0 | yes / 0 | yes / 0 | yes / 0 | yes / 0 | yes / 0 |
-| Run time (12-core laptop) | 9.9s | 9.6s | 9.3s | 13.8s | 14.0s | 27.5s | 15.3s | 16.3s |
+| Run time (12-core laptop) | 9.8s | 9.8s | 10.3s | 14.6s | 15.2s | 38.5s | 16.9s | 17.8s |
 
 Before the generalisation work, the same pipeline scored **55.66** on Gauntlet A (linking F0.5 0.02, 36 direct identifiers surviving, -25 penalty points) while scoring 98.5 on the practice set: the memorisation gap the hidden unseen-format round is designed to expose.
 
@@ -127,8 +127,8 @@ Before the generalisation work, the same pipeline scored **55.66** on Gauntlet A
 ### Hostile-export hardening
 
 * **Never re-emit an attack:** spreadsheet formulas (`= + - @`, tab) are prefixed with `'` (OWASP CSV injection); files whose
-  names carry shell metacharacters or `..` are exported cleaned under a keyed safe name; JSON with `NaN`/`Infinity` is
-  quarantined, so every JSON output is strict JSON.
+  names carry shell metacharacters or `..` are quarantined; JSON with `NaN`/`Infinity` is quarantined, so every JSON
+  output is strict JSON.
 * **Bounded work:** a free-text line over 64 KiB (buffer or regex bomb) is quarantined; long fields are scanned in chunks.
 * **Keep valid data:** a few NUL bytes injected into valid text become spaces instead of quarantining the whole export;
   impossible ages (`-1`, `0x7fffffff`, int64 overflow) become `[AGE]`.
