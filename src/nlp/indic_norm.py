@@ -12,7 +12,22 @@ from data.gazetteers import HONORIFICS_AFTER, HONORIFICS_BEFORE
 _DEVA = re.compile(r"[\u0900-\u097f]")
 _VIRAMA = "\u094d"
 _MATRAS = set(chr(c) for c in range(0x093E, 0x094D)) | {"\u0962", "\u0963"}
-_ZW_RE = re.compile(r"[\u200b-\u200f\ufeff\u2060]")
+_ZW_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff\u2060-\u206f]")
+_BIDI_RLO_RE = re.compile(r"\u202e([^\u202c\r\n]+)(?:\u202c)?")
+_PCT_SEQ_RE = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
+_PCT_PAIR_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+
+
+def unquote_percent_text(text: str) -> str:
+    """Decode multi-byte %XX percent-encoded text using pure stdlib byte hex parsing."""
+    if "%" not in text or len(_PCT_PAIR_RE.findall(text)) < 2:
+        return text
+    if text.lstrip().lower().startswith(("http://", "https://", "urn:")):
+        return text
+    return _PCT_SEQ_RE.sub(
+        lambda m: bytes.fromhex(m.group(0).replace("%", "")).decode("utf-8", errors="replace"),
+        text,
+    )
 _DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 _HOMOGLYPHS = str.maketrans({
     "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T", "Х": "X",
@@ -37,6 +52,19 @@ _ALL_HONORIFICS = HONORIFICS_BEFORE | HONORIFICS_AFTER
 GENERIC_WEAK_TOKENS = {
     "devi", "kumar", "kumari", "khatoon", "begum", "bano", "singh", "kaur", "mohamad", "shekh",
 }
+
+
+def deobfuscate_unicode(text: str) -> str:
+    """Resolve BiDi RLO overrides, strip zero-width evasion controls, and normalize to NFC."""
+    if not text:
+        return text
+    s = text
+    if "\u202e" in s:
+        s = _BIDI_RLO_RE.sub(lambda m: m.group(1)[::-1], s)
+    if any(ord(c) >= 0x200B for c in s):
+        s = _ZW_RE.sub("", s)
+        s = unicodedata.normalize("NFC", s)
+    return s
 
 
 def shadow_normalize(text: str) -> str:

@@ -23,9 +23,9 @@ from src.linkage.cluster import link_and_assign_pseudonyms
 from src.linkage.evidence import extract_all_evidence
 from src.models import FileEntry
 from src.nlp.date_shifter import shift_compact_hl7_date, shift_date_value, shift_dates_in_text
-from src.nlp.indic_norm import name_tokens, shadow_normalize
+from src.nlp.indic_norm import deobfuscate_unicode, name_tokens, shadow_normalize, unquote_percent_text
 from src.nlp.medical_guard import MedicalGuard
-from src.nlp.pii_ner import PiiHarvester, extract_context_name_spans, resolve_and_scrub
+from src.nlp.pii_ner import PiiHarvester, extract_context_name_spans, resolve_and_scrub, split_safe_chunks
 from src.nlp.pii_regex import extract_regex_spans
 from src.privacy.audit import run_egress_audit
 from src.privacy.kanon import PrivacyPlan, build_privacy_plan, generalize_age_value, scrub_tehsils_and_ages_in_text
@@ -98,18 +98,24 @@ def _parse_entry(entry: FileEntry, policy: Policy) -> None:
 def _harvest_text_spans(text: str, guard: MedicalGuard, harvester: PiiHarvester) -> None:
     if not text or not text.strip():
         return
-    rx = extract_regex_spans(text)
-    ctx = extract_context_name_spans(text, guard, rx)
-    prot = guard.protected_spans(text)
-    for sp in rx + ctx:
-        if sp.kind in ("PATIENT_NAME", "RELATIVE_NAME"):
-            if not guard.is_protected_span(sp.start, sp.end, prot, strict=True):
-                harvester.add_name(sp.text)
-        elif sp.kind in ("MRN", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "INSURANCE_ID"):
-            if not any(ps <= sp.start and sp.end <= pe and tag == "MEDICAL" for ps, pe, tag in prot):
-                harvester.add_id(sp.text)
-        elif sp.kind in ("VILLAGE", "LOCALITY", "LANDMARK", "HOUSE"):
-            harvester.add_address_piece(sp.text)
+    work = unquote_percent_text(deobfuscate_unicode(text))
+    for chunk in split_safe_chunks(work, max_len=32768):
+        rx = extract_regex_spans(chunk)
+        ctx = extract_context_name_spans(chunk, guard, rx)
+        prot = guard.protected_spans(chunk)
+        for sp in rx + ctx:
+            if sp.kind in ("PATIENT_NAME", "RELATIVE_NAME"):
+                if not guard.is_protected_span(sp.start, sp.end, prot, strict=True):
+                    harvester.add_name(sp.text)
+            elif sp.kind in ("MRN", "PHONE", "AADHAAR", "ABHA_NUMBER", "PAN", "INSURANCE_ID"):
+                in_doc_or_med = any(
+                    (tag == "DOCTOR" and ps < sp.end and pe > sp.start) or (tag == "MEDICAL" and ps <= sp.start and sp.end <= pe)
+                    for ps, pe, tag in prot
+                )
+                if not in_doc_or_med:
+                    harvester.add_id(sp.text)
+            elif sp.kind in ("VILLAGE", "LOCALITY", "LANDMARK", "HOUSE"):
+                harvester.add_address_piece(sp.text)
 
 
 def _harvest_entry(entry: FileEntry, guard: MedicalGuard, harvester: PiiHarvester) -> None:
@@ -231,8 +237,9 @@ def _rewrite_entry(
         rec_uid: str | None = None,
         is_address: bool = False,
     ) -> str:
+        work = unquote_percent_text(deobfuscate_unicode(text))
         cleaned, spans = resolve_and_scrub(
-            text, guard, harvester, psn=psn, replace_primary_id_with_psn=inject_psn
+            work, guard, harvester, psn=psn, replace_primary_id_with_psn=inject_psn
         )
         for sp in spans:
             entity_counts[sp.kind] += 1
@@ -242,9 +249,18 @@ def _rewrite_entry(
         age_band = plan.rec_age_band.get(uid)
         sup_teh = (uid in plan.rec_suppress_tehsil) if uid else True
         pin_mode = plan.rec_pin_level.get(uid, "suppress")
-        cleaned = scrub_tehsils_and_ages_in_text(cleaned, age_band, sup_teh, plan.tehsil_rx, guard)
-        cleaned = shift_dates_in_text(cleaned, delta_days=delta, dmy=dmy, anchor_year=anchor, guard=guard)
-        cleaned = _apply_pin_policy(cleaned, pin_mode, is_address=is_address)
+        if len(cleaned) <= 49152:
+            cleaned = scrub_tehsils_and_ages_in_text(cleaned, age_band, sup_teh, plan.tehsil_rx, guard)
+            cleaned = shift_dates_in_text(cleaned, delta_days=delta, dmy=dmy, anchor_year=anchor, guard=guard)
+            cleaned = _apply_pin_policy(cleaned, pin_mode, is_address=is_address)
+        else:
+            out_chunks: list[str] = []
+            for ch in split_safe_chunks(cleaned, max_len=32768):
+                ch = scrub_tehsils_and_ages_in_text(ch, age_band, sup_teh, plan.tehsil_rx, guard)
+                ch = shift_dates_in_text(ch, delta_days=delta, dmy=dmy, anchor_year=anchor, guard=guard)
+                ch = _apply_pin_policy(ch, pin_mode, is_address=is_address)
+                out_chunks.append(ch)
+            cleaned = "".join(out_chunks)
         return cleaned
 
     if entry.file_type in ("csv", "tsv"):

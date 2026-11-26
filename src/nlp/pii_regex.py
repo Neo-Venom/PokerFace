@@ -23,7 +23,7 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "MRN",
         re.compile(
-            r"\b(?=[A-Z0-9/_-]*\d{4,})(?:SNJ|JJH|UHID|DHH\d*|ADM|IPD|OPD|IP|BL|MRN)[/_-]?(?:\d{2,4}[/_-])*\d{3,}\b"
+            r"\b(?:SNJ|JJH|UHID|DHH\d{0,4}|ADM|IPD|OPD|IP|BL|MRN)[/_-]?(?:\d{2,4}[/_-]){0,3}\d{3,}\b"
             r"|\b[A-Z]{2,5}/\d{2,4}/\d{4,}\b"
             r"|\b[A-Z]{2,5}-\d{5,}\b"
         ),
@@ -43,10 +43,8 @@ _LOCALITY_RE = re.compile(
     r"|\bWard\s+\d+(?=\s*(?:,|\n|$|\bmohalla\b|\btehsil\b|\bdist|\bgram\b|\bvill|\bpin\b))"
     r"|मोहल्ला\s+[^\n,;.]{2,35})"
 )
-_LANDMARK_RE = re.compile(
-    r"(?i)(?:\b(?:near|opp\.?|opposite|behind)\s+[A-Z][A-Za-z\s]{2,35}(?=,|\n|$)"
-    r"|[^\n,;.]{2,35}\s+के\s+(?:पास|पीछे|सामने))"
-)
+_LANDMARK_EN_RE = re.compile(r"(?i)\b(?:near|opp\.?|opposite|behind)\s+[A-Z][A-Za-z\s]{2,35}(?=,|\n|$)")
+_LANDMARK_HI_RE = re.compile(r"[^\n,;.]{2,35}\s+के\s+(?:पास|पीछे|सामने)")
 _VILLAGE_RE = re.compile(
     r"(?i)(?:\b(?:Vill\.?|Village|Gram)\s*[:\-]?\s*([A-Z\u0900-\u097f][A-Za-z\u0900-\u097f\s]{2,30})(?=,|\n|$)"
     r"|ग्राम\s*[:\-]?\s*([^\n,;.]{2,30}))"
@@ -57,6 +55,7 @@ _DOB_LINE_RE = re.compile(
 _LABELLED_MRN_RE = re.compile(
     r"(?i)(?:\b(?:UHID|Reg(?:\.?|istration)?\s*No\.?|IPD\s*No\.?|OPD\s*No\.?|Patient\s*ID|MRN)|पंजीकरण\s*सं\.?|आईपीडी\s*सं\.?)\s*[:#\-]?\s*([A-Z0-9][A-Z0-9/\-]{4,22})"
 )
+_PATH_TRAIL_ID_RE = re.compile(r"(?<=[_/\\-])(\d{6,})(?=\.[A-Za-z]{2,5}\b)")
 _UUID_RE = re.compile(r"(?i)\b(?:urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 
 
@@ -83,6 +82,12 @@ def extract_regex_spans(text: str) -> list[Span]:
             continue
         spans.append(Span(s, e, "MRN", text[s:e], script=detect_script(text[s:e])))
 
+    for m in _PATH_TRAIL_ID_RE.finditer(shadow):
+        s, e = m.start(1), m.end(1)
+        if _in_uuid(s, e):
+            continue
+        spans.append(Span(s, e, "MRN", text[s:e], script=detect_script(text[s:e])))
+
     for m in _DOB_LINE_RE.finditer(shadow):
         s, e = m.start(1), m.end(1)
         if _in_uuid(s, e):
@@ -99,13 +104,20 @@ def extract_regex_spans(text: str) -> list[Span]:
     for kind, rx in (
         ("HOUSE", _HOUSE_RE),
         ("LOCALITY", _LOCALITY_RE),
-        ("LANDMARK", _LANDMARK_RE),
+        ("LANDMARK", _LANDMARK_EN_RE),
     ):
         for m in rx.finditer(shadow):
             if _in_uuid(m.start(), m.end()):
                 continue
             raw_surf = text[m.start() : m.end()]
             spans.append(Span(m.start(), m.end(), kind, raw_surf, script=detect_script(raw_surf)))
+
+    if "के" in shadow:
+        for m in _LANDMARK_HI_RE.finditer(shadow):
+            if _in_uuid(m.start(), m.end()):
+                continue
+            raw_surf = text[m.start() : m.end()]
+            spans.append(Span(m.start(), m.end(), "LANDMARK", raw_surf, script=detect_script(raw_surf)))
 
     for m in _VILLAGE_RE.finditer(shadow):
         grp = 1 if m.group(1) else 2

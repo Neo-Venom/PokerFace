@@ -1,6 +1,7 @@
 """Layer 0 Protected Clinical Shield & Runtime Dynamic Medical Lexicon."""
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import csv
 import io
 import json
@@ -13,13 +14,15 @@ from src.models import FileEntry
 _SAFE_SPAN_PATTERNS = [
     # Doctor spans (stopping before bracket/comma/EOL or clinical verbs like 'reviewed', 'took')
     re.compile(
-        r"(?i)(?:\b(?:dr\.?|doctor|consultant|attending|ref(?:erred)?\s+by|reviewed\s+by|signed\s+by)|डॉ\.?)\s+"
+        r"(?i)(?:\b(?:dr\.?|doctor|consultant|attending(?:\s+physician)?|physician|ref(?:erred)?\s+by|reviewed\s+by|signed\s+by)|डॉ\.?)\s+"
         r"(?:dr\.?\s+)?"
         r"[A-Z\u0900-\u097f][a-zA-Z\u0900-\u097f.]+"
         r"(?:\s+(?!reviewed\b|took\b|is\b|was\b|ordered\b|prescribed\b|advised\b)[A-Z\u0900-\u097f][a-zA-Z\u0900-\u097f.]+){0,2}"
+        r"(?:\s*\([^)\n]{0,80}\b(?:MBBS|MD|MS|DM|DNB|MCh|FRCS|Reg\.?\s*No\.?)\b[^)\n]{0,40}\))?"
     ),
-    # Medical credentials & ASHA role
+    # Medical credentials, ASHA role, and vaccine Lot / Batch numbers
     re.compile(r"\b(?:MBBS|MD|MS|DM|DNB|MCh|FRCS)\b(?:\s+[A-Z][a-zA-Z]+)?"),
+    re.compile(r"(?i)\b(?:Lot|Batch)\s*(?:No\.?|Number|#)?\s*[:#\-]?\s*[A-Z0-9-]{4,16}\b"),
     re.compile(r"(?i)\bASHA\s+(?:worker|workers|karyakarta|sahayika|supervisor)\b"),
     re.compile(r"\b(?:by|from|via|with)\s+ASHA\b"),
     # Hospital Ward / Bed phrases (distinct from residential Ward 20 in addresses)
@@ -146,18 +149,29 @@ class MedicalGuard:
             rhs_words = [w.lower() for w in re.findall(r"[A-Za-z\u0900-\u097f]{2,}", m.group(1)[:30])]
             if any(w in self.clinical_words for w in rhs_words[:3]):
                 spans.append((m.start(), m.end(), "MEDICAL"))
+        spans.sort(key=lambda sp: (sp[0], -sp[1]))
         return spans
 
     def is_protected_span(self, start: int, end: int, protected: list[tuple[int, int, str]], strict: bool = False) -> bool:
-        for ps, pe, tag in protected:
-            # Overlap check
+        if not protected:
+            return False
+        # Fast binary search window around sorted protected spans
+        idx = bisect_left(protected, (end, -1, ""))
+        lo = max(0, idx - 64)
+        for k in range(idx - 1, lo - 1, -1):
+            ps, pe, tag = protected[k]
             if start < pe and end > ps:
                 if strict or tag == "DOCTOR":
                     return True
-                # If completely inside a medical/dose/range span, veto!
                 if start >= ps and end <= pe:
                     return True
-                # Even partial overlap with dose/vital/lab span vetoes weak matches
+                return True
+        if idx > 64:
+            for ps, pe, tag in protected[: idx - 64]:
+                if pe <= start:
+                    continue
+                if ps >= end:
+                    break
                 return True
         return False
 

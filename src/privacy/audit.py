@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,10 +10,11 @@ from typing import Any
 
 import regex as re
 
+from src.ingest.json_handler import sanitize_base64_value
 from src.models import FileEntry
-from src.nlp.indic_norm import norm_match_text, shadow_normalize
+from src.nlp.indic_norm import deobfuscate_unicode, norm_match_text, shadow_normalize, unquote_percent_text
 from src.nlp.medical_guard import MedicalGuard
-from src.nlp.pii_ner import PiiHarvester, resolve_and_scrub
+from src.nlp.pii_ner import PiiHarvester, resolve_and_scrub, split_safe_chunks
 from src.nlp.pii_regex import extract_regex_spans
 
 _B64_RE = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
@@ -33,15 +35,23 @@ def _mask_uuids(text: str) -> str:
     return _UUID_RE.sub(lambda m: "u" * len(m.group(0)), text)
 
 
-def _decode_b64_snippets(text: str) -> str:
+def _decode_b64_snippets(text: str, depth: int = 0) -> str:
     extra: list[str] = []
+    if depth == 0:
+        unq = unquote_percent_text(text)
+        if unq != text:
+            extra.append(unq)
     for m in _B64_RE.finditer(text):
         tok = m.group(0)
         try:
             raw = base64.b64decode(tok + "=" * (-len(tok) % 4))
+            if raw.startswith(b"\x1f\x8b"):
+                raw = gzip.decompress(raw)
             dec = raw.decode("utf-8", errors="ignore")
             if dec and not dec.startswith("[ATTACHMENT_REDACTED]"):
                 extra.append(dec)
+                if depth < 2 and _B64_RE.search(dec):
+                    extra.append(_decode_b64_snippets(dec, depth + 1))
         except Exception:
             pass
     return text if not extra else (text + "\n" + "\n".join(extra))
@@ -55,19 +65,19 @@ def _has_residual_pii(
 ) -> bool:
     if secret_str and len(secret_str) >= 4 and secret_str in text:
         return True
-    combined = _mask_uuids(_decode_b64_snippets(text))
-    prot = guard.protected_spans(combined)
-    for sp in extract_regex_spans(combined):
-        if sp.kind in _CRITICAL_RX_KINDS and not guard.is_protected_span(sp.start, sp.end, prot, strict=True):
-            return True
-    for sp in harvester.sweep_spans(combined):
-        if not guard.is_protected_span(sp.start, sp.end, prot, strict=True):
-            return True
-    # Direct exact match against harvested phone/Aadhaar/ABHA >= 10 digits
-    for m in re.finditer(r"(?<!\d)(\d{10,14})(?!\d)", shadow_normalize(combined)):
-        if m.group(1) in harvester.digit_cores:
-            if not guard.is_protected_span(m.start(), m.end(), prot, strict=True):
+    combined = deobfuscate_unicode(_mask_uuids(_decode_b64_snippets(text)))
+    for chunk in split_safe_chunks(combined, max_len=32768):
+        prot = guard.protected_spans(chunk)
+        for sp in extract_regex_spans(chunk):
+            if sp.kind in _CRITICAL_RX_KINDS and not guard.is_protected_span(sp.start, sp.end, prot, strict=True):
                 return True
+        for sp in harvester.sweep_spans(chunk):
+            if not guard.is_protected_span(sp.start, sp.end, prot, strict=True):
+                return True
+        for m in re.finditer(r"(?<!\d)(\d{10,14})(?!\d)", shadow_normalize(chunk)):
+            if m.group(1) in harvester.digit_cores:
+                if not guard.is_protected_span(m.start(), m.end(), prot, strict=True):
+                    return True
     return False
 
 
@@ -102,14 +112,9 @@ def _scrub_json_tree_fallback(
         st = obj.strip()
         if _UUID_RE.fullmatch(st) or (preserve_struct and key_name in _FHIR_STRUCT_KEYS):
             return obj
-        if _B64_RE.match(st):
-            try:
-                raw = base64.b64decode(st + "=" * (-len(st) % 4)).decode("utf-8", errors="strict")
-                cleaned, _ = resolve_and_scrub(raw, guard, harvester)
-                return base64.b64encode(cleaned.encode("utf-8")).decode("ascii")
-            except Exception:
-                return obj
-        return resolve_and_scrub(obj, guard, harvester)[0]
+        if _B64_RE.fullmatch(st):
+            return sanitize_base64_value(st, lambda s: resolve_and_scrub(s, guard, harvester)[0])
+        return resolve_and_scrub(unquote_percent_text(obj), guard, harvester)[0]
     return obj
 
 

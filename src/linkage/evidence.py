@@ -9,9 +9,9 @@ from typing import Any
 from data.gazetteers import KNOWN_GEO_DISTRICTS_STATES
 from src.ingest.profiler import infer_role_from_header
 from src.models import FileEntry, PatientRecord
-from src.nlp.indic_norm import name_tokens, normalize_name_token, phonetic_skeleton, shadow_normalize
+from src.nlp.indic_norm import deobfuscate_unicode, name_tokens, normalize_name_token, phonetic_skeleton, shadow_normalize
 from src.nlp.medical_guard import MedicalGuard
-from src.nlp.pii_ner import extract_context_name_spans
+from src.nlp.pii_ner import extract_context_name_spans, split_safe_chunks
 from src.nlp.pii_regex import extract_regex_spans
 
 _AGE_NUM_RE = re.compile(r"(?i)(?:age|आयु|उम्र)?\s*[:\-]?\s*(\d{1,3})\s*(?:yrs?|years?|वर्ष|y)?(?:\s*/\s*([MF]))?\b")
@@ -193,6 +193,11 @@ def _resolve_evidence_overlaps(spans: list[Any]) -> list[Any]:
 
 
 def _extract_from_text_blob(ev: RecordEvidence, text: str, guard: MedicalGuard, dmy: bool, allow_bare_names: bool = True) -> None:
+    text = deobfuscate_unicode(text)
+    if len(text) > 49152:
+        for ch in split_safe_chunks(text, max_len=32768):
+            _extract_from_text_blob(ev, ch, guard, dmy, allow_bare_names=allow_bare_names)
+        return
     rx = extract_regex_spans(text)
     ctx = extract_context_name_spans(text, guard, rx)
     prot = guard.protected_spans(text)
@@ -225,7 +230,12 @@ def _extract_from_text_blob(ev: RecordEvidence, text: str, guard: MedicalGuard, 
             if sp.kind == "RELATIVE_NAME":
                 rel_toks_seen.update(ev.rel_names)
         elif sp.kind in ("PHONE", "AADHAAR", "AADHAAR_MASKED", "ABHA_NUMBER", "PAN", "EMAIL", "INSURANCE_ID", "MRN"):
-            if sp.kind == "PHONE" and any(ps < sp.end and pe > sp.start and tag == "DOCTOR" for ps, pe, tag in prot):
+            if sp.kind == "PHONE" and any(
+                (tag == "DOCTOR" and ps < sp.end and pe > sp.start) or (tag == "MEDICAL" and ps <= sp.start and sp.end <= pe)
+                for ps, pe, tag in prot
+            ):
+                continue
+            if sp.kind == "MRN" and any(tag == "DOCTOR" and ps < sp.end and pe > sp.start for ps, pe, tag in prot):
                 continue
             _add_id_evidence(ev, sp.kind, sp.text)
         elif sp.kind == "DOB":

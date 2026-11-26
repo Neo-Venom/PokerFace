@@ -1,6 +1,7 @@
 """Multilingual EN/HI/Hinglish context NER, canary catcher, and Harvest-Then-Sweep engine."""
 from __future__ import annotations
 
+from bisect import bisect_left
 import json
 import regex as re
 from typing import Any
@@ -14,9 +15,11 @@ from data.gazetteers import (
     KNOWN_GEO_DISTRICTS_STATES,
 )
 from src.models import FileEntry, Span
-from src.nlp.indic_norm import GENERIC_WEAK_TOKENS, detect_script, name_tokens, romanize_token, shadow_normalize
+from src.nlp.indic_norm import GENERIC_WEAK_TOKENS, deobfuscate_unicode, detect_script, name_tokens, normalize_name_token, romanize_token, shadow_normalize
 from src.nlp.medical_guard import MedicalGuard
 from src.nlp.pii_regex import extract_regex_spans
+
+_NORM_INDIAN_NAMES = {normalize_name_token(n) for n in COMMON_INDIAN_NAMES if len(normalize_name_token(n)) >= 3}
 
 # ------------------------------------------------------------------ Context patterns
 _LABEL_NAME_RE = re.compile(
@@ -223,6 +226,15 @@ def extract_context_name_spans(text: str, guard: MedicalGuard, anchor_spans: lis
         w1, w2 = m.group(1), m.group(2)
         if w1 in COMMON_INDIAN_DEVA_NAMES and w2 in COMMON_INDIAN_DEVA_NAMES:
             _add(m.start(), m.end(), "PATIENT_NAME")
+        elif (
+            w1 not in HINGLISH_STOPWORDS
+            and w2 not in HINGLISH_STOPWORDS
+            and not guard.is_clinical_word(w1)
+            and not guard.is_clinical_word(w2)
+        ):
+            n1, n2 = normalize_name_token(w1), normalize_name_token(w2)
+            if len(n1) >= 3 and len(n2) >= 3 and n1 in _NORM_INDIAN_NAMES and n2 in _NORM_INDIAN_NAMES:
+                _add(m.start(), m.end(), "PATIENT_NAME")
 
     return spans
 
@@ -324,17 +336,69 @@ class PiiHarvester:
         return spans
 
 
-def resolve_and_scrub(
+def split_safe_chunks(text: str, max_len: int = 32768) -> list[str]:
+    """Split huge single-line notes on sentence/whitespace boundaries to avoid quadratic scans."""
+    if len(text) <= max_len:
+        return [text]
+    chunks: list[str] = []
+    pos = 0
+    n = len(text)
+    while pos < n:
+        if n - pos <= max_len:
+            chunks.append(text[pos:])
+            break
+        hi = pos + max_len
+        cut = text.rfind("\n", pos + max_len // 2, hi)
+        if cut < 0:
+            cut = text.rfind(". ", pos + max_len // 2, hi)
+            if cut >= 0:
+                cut += 2
+        if cut < 0:
+            cut = text.rfind(" ", pos + max_len // 2, hi)
+            if cut >= 0:
+                cut += 1
+        if cut <= pos:
+            cut = hi
+        chunks.append(text[pos:cut])
+        pos = cut
+    return chunks
+
+
+def _has_prot_overlap(prot: list[tuple[int, int, str]], s: int, e: int, tag: str, strict_inside: bool = False) -> bool:
+    if not prot:
+        return False
+    idx = bisect_left(prot, (e, -1, ""))
+    lo = max(0, idx - 64)
+    for k in range(idx - 1, lo - 1, -1):
+        ps, pe, ptag = prot[k]
+        if ptag != tag:
+            continue
+        if strict_inside:
+            if ps <= s and e <= pe:
+                return True
+        elif ps < e and pe > s:
+            return True
+    if idx > 64:
+        for ps, pe, ptag in prot[: idx - 64]:
+            if ptag != tag or pe <= s:
+                continue
+            if ps >= e:
+                break
+            if strict_inside:
+                if ps <= s and e <= pe:
+                    return True
+            else:
+                return True
+    return False
+
+
+def _resolve_chunk(
     text: str,
     guard: MedicalGuard,
     harvester: PiiHarvester | None = None,
     psn: str | None = None,
     replace_primary_id_with_psn: bool = False,
 ) -> tuple[str, list[Span]]:
-    """Run all detection layers, subtract protected medical/doctor spans, resolve overlaps, and rewrite."""
-    if not text or not text.strip():
-        return text, []
-
     prot = guard.protected_spans(text)
     rx_spans = extract_regex_spans(text)
     ctx_spans = extract_context_name_spans(text, guard, rx_spans)
@@ -343,40 +407,44 @@ def resolve_and_scrub(
     candidates = rx_spans + ctx_spans + sweep_spans
     filtered: list[Span] = []
     for sp in candidates:
-        # High-confidence explicit IDs/phones/emails are only vetoed if inside DOCTOR/MEDICAL exact span
         strict_veto = sp.kind in ("PATIENT_NAME", "RELATIVE_NAME", "PIN", "HOUSE", "LOCALITY", "LANDMARK", "VILLAGE")
         if guard.is_protected_span(sp.start, sp.end, prot, strict=strict_veto):
             if strict_veto:
                 continue
-            # Explicit PHONE / AADHAAR / ABHA / PAN beats loose RANGE unless strictly a DOCTOR/LOINC/DOSE span
-            if sp.kind == "PHONE":
-                in_doc = any(ps < sp.end and pe > sp.start and tag == "DOCTOR" for ps, pe, tag in prot)
-                if in_doc:
-                    continue
-            else:
-                inside_med = any(ps <= sp.start and sp.end <= pe and tag == "MEDICAL" for ps, pe, tag in prot)
-                if inside_med:
-                    continue
+            in_doc = _has_prot_overlap(prot, sp.start, sp.end, "DOCTOR", strict_inside=False)
+            inside_med = _has_prot_overlap(prot, sp.start, sp.end, "MEDICAL", strict_inside=True)
+            if sp.kind == "PHONE" and (in_doc or inside_med):
+                continue
+            if sp.kind != "PHONE" and (inside_med or (in_doc and sp.kind == "MRN")):
+                continue
         if sp.kind == "PATIENT_NAME" and guard.is_clinical_word(sp.text):
             continue
         filtered.append(sp)
 
-    # Sort by priority desc, length desc, start asc to select non-overlapping winners
+    # Sort by priority desc, length desc, start asc to select non-overlapping winners (O(K log K) via bisect)
     filtered.sort(key=lambda sp: (-_PRIORITY.get(sp.kind, 50), -(sp.end - sp.start), sp.start))
     chosen: list[Span] = []
+    starts: list[int] = []
+    ends: list[int] = []
     for sp in filtered:
-        if any(sp.start < c.end and sp.end > c.start for c in chosen):
+        pos = bisect_left(starts, sp.start)
+        if pos > 0 and ends[pos - 1] > sp.start:
+            continue
+        if pos < len(starts) and starts[pos] < sp.end:
             continue
         chosen.append(sp)
+        starts.insert(pos, sp.start)
+        ends.insert(pos, sp.end)
 
     chosen.sort(key=lambda sp: sp.start)
     if not chosen:
         return text, []
 
-    # Rewrite right-to-left
-    out_chars = list(text)
+    parts: list[str] = []
+    cursor = 0
     used_psn = False
-    for sp in reversed(chosen):
+    for sp in chosen:
+        parts.append(text[cursor : sp.start])
         if replace_primary_id_with_psn and psn and sp.kind == "MRN" and not used_psn:
             repl = psn
             used_psn = True
@@ -396,6 +464,35 @@ def resolve_and_scrub(
             repl = "[ADDRESS]"
         else:
             repl = "[ID]"
-        out_chars[sp.start : sp.end] = list(repl)
+        parts.append(repl)
+        cursor = sp.end
+    parts.append(text[cursor:])
+    return "".join(parts), chosen
 
-    return "".join(out_chars), chosen
+
+def resolve_and_scrub(
+    text: str,
+    guard: MedicalGuard,
+    harvester: PiiHarvester | None = None,
+    psn: str | None = None,
+    replace_primary_id_with_psn: bool = False,
+) -> tuple[str, list[Span]]:
+    """Run all detection layers, subtract protected medical/doctor spans, resolve overlaps, and rewrite."""
+    if not text or not text.strip():
+        return text, []
+    text = deobfuscate_unicode(text)
+    if len(text) <= 49152:
+        return _resolve_chunk(text, guard, harvester, psn, replace_primary_id_with_psn)
+    out_parts: list[str] = []
+    all_spans: list[Span] = []
+    offset = 0
+    psn_left = replace_primary_id_with_psn
+    for ch in split_safe_chunks(text, max_len=32768):
+        cl, sps = _resolve_chunk(ch, guard, harvester, psn, psn_left)
+        if psn_left and psn and psn in cl:
+            psn_left = False
+        out_parts.append(cl)
+        for sp in sps:
+            all_spans.append(Span(sp.start + offset, sp.end + offset, sp.kind, sp.text, script=sp.script))
+        offset += len(ch)
+    return "".join(out_parts), all_spans

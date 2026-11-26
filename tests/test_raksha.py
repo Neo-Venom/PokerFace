@@ -189,6 +189,69 @@ class TestRakshaCore(unittest.TestCase):
             self.assertNotIn("unit-test-secret-key", out_txt)
             self.assertIn("Typhoid fever", out_txt)
 
+    def test_adversarial_evasion_redos_and_doctor_guard(self) -> None:
+        import base64
+        import gzip
+        import time
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            inp = root / "in"
+            out = root / "out"
+            inp.mkdir()
+            (inp / "doc_collision.txt").write_text(
+                "Attending Physician: Dr. Rajesh Verma (MD Medicine, Reg No. UP-45891)\n"
+                "Patient Name: Rajesh Verma (Age 47/M, UHID: JJH-0099881, Mob: 9812345670)\n"
+                "Allergy: Penicillin. Lot #9876543210\n",
+                encoding="utf-8",
+            )
+            (inp / "unicode_evasion.txt").write_text(
+                "Patient: S\u200bu\u200br\u200be\u200bs\u200bh P\u200ba\u200bt\u200be\u200bl\n"
+                "BiDi: \u202e3210987654\u202c\n"
+                "Nukta: \u0958\u093e\u0938\u093f\u092e \u0905\u0932\u0940\n",
+                encoding="utf-8",
+            )
+            gz_b64 = base64.b64encode(gzip.compress(b'{"patient":"Tariq Siddiqui","phone":"9818181818"}')).decode("ascii")
+            dbl_b64 = base64.b64encode(base64.b64encode(b"Patient Name: Nisha Gupta, Mob 9717171717")).decode("ascii")
+            (inp / "encoded.json").write_text(
+                json.dumps(
+                    {
+                        "gz": gz_b64,
+                        "dbl": dbl_b64,
+                        "url": "name%3DPooja%20Bhatt%26mob%3D9654321098",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (inp / "redos.txt").write_text(
+                ("+91-" * 800) + "\n" + ("1-0-" * 1200) + "\nPatient Name: Arjun Rao Mob: 9876543210\n",
+                encoding="utf-8",
+            )
+            os.environ["RAKSHA_SECRET"] = "adv-secret"
+            t0 = time.perf_counter()
+            rc = run_pipeline(inp, out, Policy())
+            dt_sec = time.perf_counter() - t0
+            self.assertEqual(rc, 0)
+            self.assertLess(dt_sec, 5.0)
+
+            doc_out = (out / "sanitized" / "doc_collision.txt").read_text(encoding="utf-8")
+            self.assertIn("Dr. Rajesh Verma (MD Medicine, Reg No. UP-45891)", doc_out)
+            self.assertIn("Lot #9876543210", doc_out)
+            self.assertIn("UHID: PSN-", doc_out)
+            self.assertNotIn("9812345670", doc_out)
+
+            uni_out = (out / "sanitized" / "unicode_evasion.txt").read_text(encoding="utf-8")
+            self.assertNotIn("Suresh", uni_out)
+            self.assertNotIn("9876543210", uni_out)
+            self.assertNotIn("3210987654", uni_out)
+            self.assertNotIn("\u0958\u093e\u0938\u093f\u092e", uni_out)
+
+            enc_obj = json.loads((out / "sanitized" / "encoded.json").read_text(encoding="utf-8"))
+            self.assertNotIn("Nisha", base64.b64decode(base64.b64decode(enc_obj["dbl"])).decode("utf-8", errors="ignore"))
+            self.assertNotIn("Tariq", gzip.decompress(base64.b64decode(enc_obj["gz"])).decode("utf-8", errors="ignore"))
+            self.assertNotIn("Pooja", enc_obj["url"])
+            self.assertNotIn("9654321098", enc_obj["url"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import re
 import sys
@@ -172,14 +173,23 @@ def parse_json_entry(entry: FileEntry, policy: Policy) -> None:
             )
 
 
-def sanitize_base64_value(val: str, scrub_text_fn: Callable[[str], str]) -> str:
+def sanitize_base64_value(val: str, scrub_text_fn: Callable[[str], str], depth: int = 0) -> str:
     if not _B64_RE.match(val.strip()):
         return scrub_text_fn(val)
     tok = val.strip()
     try:
         raw = base64.b64decode(tok + "=" * (-len(tok) % 4))
+        if raw.startswith(b"\x1f\x8b") and depth < 3:
+            raw_gz = gzip.decompress(raw)
+            decoded_gz = raw_gz.decode("utf-8", errors="strict")
+            cleaned_gz = sanitize_base64_value(decoded_gz, scrub_text_fn, depth + 1) if _B64_RE.match(decoded_gz.strip()) else scrub_text_fn(decoded_gz)
+            recompressed = gzip.compress(cleaned_gz.encode("utf-8"), mtime=0)
+            return base64.b64encode(recompressed).decode("ascii")
         decoded = raw.decode("utf-8", errors="strict")
-        cleaned = scrub_text_fn(decoded)
+        if depth < 3 and _B64_RE.match(decoded.strip()):
+            cleaned = sanitize_base64_value(decoded.strip(), scrub_text_fn, depth + 1)
+        else:
+            cleaned = scrub_text_fn(decoded)
         return base64.b64encode(cleaned.encode("utf-8")).decode("ascii")
     except Exception:
         # Non-text binary base64: replace with placeholder base64
