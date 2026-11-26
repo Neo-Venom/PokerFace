@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from raksha.config import derive_subkey, load_policy, require_secret
+from raksha.detect.crf_model import CRFPredictor
 from raksha.detect.identifiers import (
     derive_id_patterns_from_values,
     detect_identifier_spans,
@@ -176,6 +177,7 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
     )
     clinical_lexicon = build_clinical_lexicon(parsed_items)
     alias_registry = build_alias_registry(parsed_items)
+    crf_predictor = CRFPredictor()
 
     entity_stats: dict[str, int] = {}
 
@@ -185,7 +187,8 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> int:
         id_spans = detect_identifier_spans(txt, extra_mrn_patterns=extra_mrn_patterns, view=nv)
         ctx_spans = detect_context_name_and_address_spans(txt, view=nv, protected_spans=prot)
         reg_spans = alias_registry.propose_spans(txt, view=nv)
-        merged = resolve_pii_vs_protected(id_spans + ctx_spans + reg_spans, prot)
+        crf_spans = crf_predictor.predict_spans(txt) if crf_predictor.available else []
+        merged = resolve_pii_vs_protected(id_spans + ctx_spans + reg_spans + crf_spans, prot)
         return redact_spans(txt, merged, stats=entity_stats)
 
     # Pass 2: sanitize & write outputs

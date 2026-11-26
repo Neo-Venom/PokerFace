@@ -59,13 +59,16 @@ _ICD_AND_HISTORY_RE = re.compile(
     r"|\b(?:No\s+)?[KH]/C/O\s*:?\s*[^\n.;]+"
     r"|\bH/O\s*:?\s*[^\n.;]+"
     r"|\bC/O\s*:?\s*(?:fever|bukhar|बुखार|pain|dard|दर्द|cough|khansi|vomiting|weakness|diarrhoea|loose\s+motions)[^\n.;]*"
+    r"|\b(?:Diagnosis|Presenting\s+complaints|Procedure)\s*:\s*[^\n]+"
+    r"|निदान\s*:\s*[^\n]+"
     r"|\b(?:Ward|Bed)\s+\d+(?:\s*\([^)]+\))?",
     re.I,
 )
 _HINDI_CLINICAL_RE = re.compile(
     r"\d+\s*दिन\s*से\s*(?:बुखार|पेट\s*दर्द|खांसी|कमजोरी|उल्टी|दस्त)"
     r"|\d+\s*din\s*se\s*(?:bukhar|pet\s*mein\s*dard|dard|khansi)"
-    r"|\b(?:bukhar|dawai|khana\s+kam|ulti|band\s+ho\s+gayi|theek\s+se\s+neend)\b",
+    r"|\b(?:bukhar|dawai|khana\s+kam|ulti|band\s+ho\s+gayi|theek\s+se\s+neend)\b"
+    r"|(?:फेफड़ों\s+की\s+टीबी|निमोनिया|मलेरिया|टाइफाइड|डेंगू|मधुमेह|पीलिया|भर्ती\s+की\s+तारीख|छुट्टी\s+की\s+तारीख)",
     re.I,
 )
 

@@ -64,6 +64,18 @@ Baseline starter (before M1 changes):
   - LF-normalized input check: 13 / 3230 (0.4% leaked), content 0.0%, base64 0.0%, metadata 0.0%, key 0.0%, header 0.0%, deva 0.0%, hinglish 0.0%, canaries 0 / 4, medical values 4671 / 4671 (100.0%)
   - All 15 unit tests passing
 
+### Step G: Synthetic-Trained CRF (`sklearn-crfsuite`)
+- Offline synthetic training corpus generator (`tools/train_crf.py`) using `Faker(['en_IN', 'hi_IN'])` + synthetic canary names + EN/HI/Hinglish multi-style templates + clinical negative traps
+- Disjoint split validation by patient identity: `P=0.999 R=0.995 F1=0.997` (disjoint patients); `P=1.000 R=1.000 F1=1.000` (unseen canary-context test)
+- Compact binary model (`models/pii_crf.crfsuite`, `39.6 KB`) loaded via `pycrfsuite.Tagger` with char n-grams, script, shape, prefix/suffix, and context window features
+- Integrated via `resolve_pii_vs_protected` so protected clinical spans & doctors always win
+- Results (`check_dev.py`):
+  - Total PII leaked: 35 / 3230 (1.1% raw / 0.4% LF), content 0.0%, base64 0.0%, metadata 0.0%, key 0.0%, header 0.0%, deva 0.0%, hinglish 0.0%
+  - Canaries leaked: 0 / 4
+  - Medical values kept: 4497 / 4497 (100.0%)
+  - All 16 unit tests passing
+
+
 
 
 
