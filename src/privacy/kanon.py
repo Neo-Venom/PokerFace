@@ -274,14 +274,36 @@ class PrivacyPlan:
     rec_birth_cohort: dict[str, str] = field(default_factory=dict)
     rec_suppress_tehsil: set[str] = field(default_factory=set)
     rec_pin_level: dict[str, str] = field(default_factory=dict)  # "pin3" | "pin2" | "suppress"
+    # The record's own structured district value: a village/city field is generalised to it (truthful, and the
+    # record already releases it) instead of being blanked.
+    rec_district: dict[str, str] = field(default_factory=dict)
     harvested_tehsils: set[str] = field(default_factory=set)
     tehsil_rx: re.Pattern[str] | None = None
     records_generalized: int = 0
     records_suppressed: int = 0
 
 
-def _collect_tehsil_values(entries: list[FileEntry], rec_tehsils: dict[str, set[str]]) -> set[str]:
+_DISTRICT_KEYS = ("district", "distt", "dist", "jila", "zila", "zilla")
+
+
+def _note_district(rec_district: dict[str, str], uid: str, value: str) -> None:
+    """Remember a record's structured district; a record naming two different districts keeps none."""
+    v = " ".join(value.split())
+    if not v or len(v) > 40 or not re.search(r"[^\W\d_]{3}", v) or re.search(r"\d", v):
+        return
+    prev = rec_district.get(uid)
+    if prev is None:
+        rec_district[uid] = v
+    elif prev and prev.casefold() != v.casefold():
+        rec_district[uid] = ""
+
+
+def _collect_tehsil_values(
+    entries: list[FileEntry], rec_tehsils: dict[str, set[str]], rec_district: dict[str, str] | None = None
+) -> set[str]:
     tehsils: set[str] = set()
+    if rec_district is None:
+        rec_district = {}
     for entry in entries:
         if entry.status != "sanitized" or entry.is_clean_doc:
             continue
@@ -293,6 +315,8 @@ def _collect_tehsil_values(entries: list[FileEntry], rec_tehsils: dict[str, set[
                     if not s:
                         continue
                     role = roles.get(idx, "FREE_TEXT")
+                    if role == "DISTRICT":
+                        _note_district(rec_district, rec.record_uid, s)
                     if role == "TEHSIL":
                         nt = normalize_name_token(s)
                         if nt:
@@ -315,6 +339,8 @@ def _collect_tehsil_values(entries: list[FileEntry], rec_tehsils: dict[str, set[
                                 stack.append(v)
                             elif isinstance(v, str) and v.strip():
                                 role = resolve_key_role(entry, str(k))
+                                if role == "DISTRICT" or str(k).lower() in _DISTRICT_KEYS:
+                                    _note_district(rec_district, rec.record_uid, v)
                                 if role == "TEHSIL" or "tehsil" in str(k).lower():
                                     tehsils.add(v.strip())
                                     rec_tehsils[rec.record_uid].add(normalize_name_token(v))
@@ -353,7 +379,9 @@ def build_privacy_plan(
     """Compute patient-pooled k-anonymity plan and deterministic per-patient date shifts."""
     plan = PrivacyPlan()
     rec_tehsils: dict[str, set[str]] = defaultdict(set)
-    plan.harvested_tehsils = _collect_tehsil_values(entries, rec_tehsils)
+    rec_district: dict[str, str] = {}
+    plan.harvested_tehsils = _collect_tehsil_values(entries, rec_tehsils, rec_district)
+    plan.rec_district = {uid: d for uid, d in sorted(rec_district.items()) if d}
 
     # Compile harvested tehsil regex so free-text references are scrubbed consistently
     clean_tehs = sorted({t.strip() for t in plan.harvested_tehsils if len(t.strip()) >= 4}, key=len, reverse=True)

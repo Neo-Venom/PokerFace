@@ -76,3 +76,29 @@ class TestPlanner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVillageToDistrict(unittest.TestCase):
+    def test_village_column_becomes_the_rows_district(self) -> None:
+        import os
+        import tempfile
+
+        from src.pipeline import run_pipeline
+
+        with tempfile.TemporaryDirectory() as td:
+            inp, out = Path(td) / "in", Path(td) / "out"
+            inp.mkdir()
+            (inp / "reg.csv").write_text(
+                "UHID,Patient Name,Gender,Age,Village,District,PIN\n"
+                "SNJ/26/0001,Ramesh Yadav,M,44,Khera Khurd,Sitapur,261001\n"
+                "SNJ/26/0002,Sunita Devi,F,39,Bhimganj,,226183\n",
+                encoding="utf-8",
+            )
+            os.environ["RAKSHA_SECRET"] = "village-test"
+            self.assertEqual(run_pipeline(inp, out, Policy()), 0)
+            text = (out / "sanitized" / "reg.csv").read_text(encoding="utf-8")
+            rows = [r.split(",") for r in text.strip().splitlines()[1:]]
+            self.assertEqual(rows[0][4], "Sitapur")
+            self.assertEqual(rows[1][4], "[ADDRESS]")  # no district on the row: blanked, never guessed
+            self.assertNotIn("Khera", text)
+            self.assertNotIn("Bhimganj", text)

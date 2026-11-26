@@ -291,6 +291,14 @@ def _rewrite_entry(
             txt = _PIN3_MASKED_RE.sub("[PIN]", txt)
         return txt
 
+    def _village_generalised(uid: str) -> str:
+        """A village/city field becomes the record's own district (truthful generalisation) when that value
+        survives scrubbing unchanged; otherwise it is blanked."""
+        dist = plan.rec_district.get(uid, "") if uid else ""
+        if dist and _scrub_str(dist, rec_uid=uid) == dist:
+            return dist
+        return "[ADDRESS]"
+
     def _scrub_str(
         text: str,
         psn: str | None = None,
@@ -432,7 +440,7 @@ def _rewrite_entry(
                         out.append(digits[:3] + "***")
                 elif role == "VILLAGE":
                     entity_counts["VILLAGE"] += 1
-                    out.append("[ADDRESS]")
+                    out.append(_village_generalised(uid))
                 elif role == "TEHSIL":
                     out.append("[ADDRESS]" if sup_teh else val)
                 elif role == "DOCTOR":
@@ -457,7 +465,11 @@ def _rewrite_entry(
             if "line" in addr:
                 addr["line"] = []
             if "city" in addr:
-                addr.pop("city", None)
+                dist = addr.get("district")
+                if isinstance(dist, str) and dist.strip() and _village_generalised(uid) == " ".join(dist.split()):
+                    addr["city"] = " ".join(dist.split())
+                else:
+                    addr.pop("city", None)
             if isinstance(addr.get("postalCode"), str) and addr["postalCode"].strip():
                 digits = re.sub(r"\D", "", shadow_normalize(addr["postalCode"]))
                 addr["postalCode"] = "[PIN]" if (pin_mode == "suppress" or len(digits) != 6) else (digits[:3] + "***")
@@ -615,7 +627,7 @@ def _rewrite_entry(
                 return digits[:3] + "***"
             if role == "VILLAGE" or (kl in ("village", "city") and "/facility/" not in pl):
                 entity_counts["VILLAGE"] += 1
-                return "[ADDRESS]"
+                return _village_generalised(r_uid)
             if role == "TEHSIL" or "tehsil" in kl:
                 return "[ADDRESS]" if r_sup_teh else val
             mapped_val = _lookup_summary_psn(val, allow_name=True)
