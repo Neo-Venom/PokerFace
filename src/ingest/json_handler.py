@@ -1,22 +1,99 @@
 """Iterative JSON parser, RFC 6901 pointer extractor, key scrubber, and type-preserving writer."""
 from __future__ import annotations
 
-import base64
-import gzip
 import json
 import re
-import sys
 from typing import Any, Callable
 
 from src.config import Policy
+from src.ingest.hidden import fix_surrogates_tree, scrub_hidden, scrub_payload_value
 from src.ingest.profiler import infer_date_order
 from src.models import FileEntry, PatientRecord
 
-_B64_RE = re.compile(r"^[A-Za-z0-9+/]{24,}={0,2}$")
+# Strings JSON keeps out of the bracket count, and the brackets themselves (pre-parse depth guard).
+_JSON_STR_RE = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"', re.S)
+_JSON_BRACKET_RE = re.compile(r"[\[\]{}]")
+_LONE_SURROGATE_ESC_RE = re.compile(r"\\u[dD][89a-fA-F][0-9a-fA-F]{2}")
+# Key words whose string value is file content: a binary base64 blob there is replaced, never shipped raw.
+_ATTACH_KEY_WORDS = frozenset({"data", "photo", "image", "img", "scan", "blob", "attachment", "attachments", "attach",
+                               "signature", "pdf", "base64", "b64", "content", "thumbnail", "binary", "jpeg", "png"})
+JSON_LINES_EXTS = (".jsonl", ".ndjson")
 
 
 def escape_pointer_token(token: str) -> str:
     return token.replace("~", "~0").replace("/", "~1")
+
+
+def json_text_depth_exceeds(text: str, limit: int) -> bool:
+    """Streaming nesting check on the raw text, before json.loads: a 1,500-deep bomb is rejected the same way on
+    every Python version (no recursion-limit games, no deep tree for later stages to walk)."""
+    depth = 0
+    for m in _JSON_BRACKET_RE.finditer(_JSON_STR_RE.sub("", text)):
+        if m.group(0) in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        else:
+            depth -= 1
+    return False
+
+
+def deep_copy_json(data: Any) -> Any:
+    """Iterative deep copy of a parsed JSON tree (copy.deepcopy recurses ~2 frames per level)."""
+    if not isinstance(data, (dict, list)):
+        return data
+    root: Any = {} if isinstance(data, dict) else []
+    stack: list[tuple[Any, Any]] = [(data, root)]
+    while stack:
+        src, dst = stack.pop()
+        items = src.items() if isinstance(src, dict) else enumerate(src)
+        for k, v in items:
+            if isinstance(v, (dict, list)):
+                child: Any = {} if isinstance(v, dict) else []
+                stack.append((v, child))
+            else:
+                child = v
+            if isinstance(dst, dict):
+                dst[k] = child
+            else:
+                dst.append(child)
+    return root
+
+
+def is_json_lines(entry: FileEntry) -> bool:
+    """JSON Lines entries carry "\\n" as their record delimiter (FileEntry.delimiter is otherwise CSV-only)."""
+    return entry.delimiter == "\n"
+
+
+def _parse_json_lines(text: str) -> list[Any] | None:
+    """One JSON value per non-blank line, or None if any line is not JSON."""
+    out: list[Any] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line, parse_constant=_reject_constant))
+        except ValueError:
+            return None
+    return out if out else None
+
+
+def serialize_json_entry(entry: FileEntry, data: Any) -> str:
+    """JSON stays pretty-printed JSON; JSON Lines stays one compact value per line with the input's blank lines
+    and line endings."""
+    if not is_json_lines(entry) or not isinstance(data, list):
+        return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    text = entry.text_decoded or ""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    out: list[str] = []
+    it = iter(data)
+    for line in text.splitlines():
+        if line.strip():
+            out.append(json.dumps(next(it, None), ensure_ascii=False))
+        else:
+            out.append(line)
+    out.extend(json.dumps(v, ensure_ascii=False) for v in it)
+    return nl.join(out) + nl
 
 
 def json_depth_exceeds(obj: Any, limit: int) -> bool:
@@ -108,29 +185,47 @@ def _reject_constant(name: str):
     raise ValueError(f"invalid JSON constant {name}")
 
 
+def _quarantine(entry: FileEntry, reason: str) -> None:
+    entry.status = "quarantined"
+    entry.rel_output_path = None
+    entry.reason = reason
+
+
 def parse_json_entry(entry: FileEntry, policy: Policy) -> None:
+    """Strict JSON / JSON Lines parse. Quarantined (never re-emitted): truncated or invalid JSON, NaN/Infinity
+    (not JSON, would ship an unparseable file), nesting deeper than policy.max_json_depth (depth bombs).
+    Duplicate keys follow the JSON parser (last value wins): an earlier duplicate never reaches the output, so it
+    cannot leak, and the file's records are kept instead of losing the whole file to quarantine."""
     text = entry.text_decoded or ""
-    prev = sys.getrecursionlimit()
+    if json_text_depth_exceeds(text, policy.max_json_depth):
+        _quarantine(entry, "too_deep")
+        return
+    jsonl = entry.rel_input_path.lower().endswith(JSON_LINES_EXTS)
+    data: Any = None
     try:
-        sys.setrecursionlimit(max(prev, 5000))
-        data = json.loads(text, parse_constant=_reject_constant)
+        if jsonl:
+            data = _parse_json_lines(text)
+            if data is None:
+                raise ValueError("invalid JSON line")
+        else:
+            data = json.loads(text, parse_constant=_reject_constant)
     except RecursionError:
-        entry.status = "quarantined"
-        entry.rel_output_path = None
-        entry.reason = "too_deep"
+        _quarantine(entry, "too_deep")
         return
     except ValueError as exc:
-        entry.status = "quarantined"
-        entry.rel_output_path = None
-        entry.reason = type(exc).__name__
-        return
-    finally:
-        sys.setrecursionlimit(prev)
+        # A .json file holding JSON Lines ("Extra data" after the first value) is still JSON Lines.
+        data = None if jsonl or "Extra data" not in str(exc) else _parse_json_lines(text)
+        if data is None or len(data) < 2:
+            _quarantine(entry, type(exc).__name__)
+            return
+        jsonl = True
+    if jsonl:
+        entry.delimiter = "\n"
+    if _LONE_SURROGATE_ESC_RE.search(text):
+        data = fix_surrogates_tree(data)
 
     if json_depth_exceeds(data, policy.max_json_depth):
-        entry.status = "quarantined"
-        entry.rel_output_path = None
-        entry.reason = "too_deep"
+        _quarantine(entry, "too_deep")
         return
 
     entry.parsed_data = data
@@ -178,27 +273,15 @@ def parse_json_entry(entry: FileEntry, policy: Policy) -> None:
             )
 
 
-def sanitize_base64_value(val: str, scrub_text_fn: Callable[[str], str], depth: int = 0) -> str:
-    if not _B64_RE.match(val.strip()):
-        return scrub_text_fn(val)
-    tok = val.strip()
-    try:
-        raw = base64.b64decode(tok + "=" * (-len(tok) % 4))
-        if raw.startswith(b"\x1f\x8b") and depth < 3:
-            raw_gz = gzip.decompress(raw)
-            decoded_gz = raw_gz.decode("utf-8", errors="strict")
-            cleaned_gz = sanitize_base64_value(decoded_gz, scrub_text_fn, depth + 1) if _B64_RE.match(decoded_gz.strip()) else scrub_text_fn(decoded_gz)
-            recompressed = gzip.compress(cleaned_gz.encode("utf-8"), mtime=0)
-            return base64.b64encode(recompressed).decode("ascii")
-        decoded = raw.decode("utf-8", errors="strict")
-        if depth < 3 and _B64_RE.match(decoded.strip()):
-            cleaned = sanitize_base64_value(decoded.strip(), scrub_text_fn, depth + 1)
-        else:
-            cleaned = scrub_text_fn(decoded)
-        return base64.b64encode(cleaned.encode("utf-8")).decode("ascii")
-    except Exception:
-        # Non-text binary base64: replace with placeholder base64
-        return base64.b64encode(b"[ATTACHMENT_REDACTED]").decode("ascii")
+def is_attachment_key(key: str) -> bool:
+    """Key words that say "this string is file content" (photo, scan, pdf, base64 ...)."""
+    parts = re.findall(r"[a-z0-9]+", re.sub(r"([a-z])([A-Z])", r" ", key).lower())
+    return any(p in _ATTACH_KEY_WORDS for p in parts)
+
+
+def sanitize_base64_value(val: str, scrub_text_fn: Callable[[str], str], attachment: bool = False) -> str:
+    """Scrub one string value, hidden payloads included (see src.ingest.hidden.scrub_hidden)."""
+    return scrub_hidden(val, scrub_text_fn, attachment=attachment)
 
 
 def transform_json_iterative(
@@ -209,11 +292,11 @@ def transform_json_iterative(
     """Iteratively rewrite keys and values while preserving structure, order, and types."""
 
     def _transform_leaf(path: str, key_name: str, val: Any) -> Any:
-        if isinstance(val, str):
-            kl = key_name.lower()
-            if kl == "data" or "base64" in kl or _B64_RE.match(val.strip()):
-                return sanitize_base64_value(val, lambda s: scrub_val_fn(path, s, key_name))
-            return scrub_val_fn(path, val, key_name)
+        if isinstance(val, str) and len(val) >= 32 and is_attachment_key(key_name):
+            # File content under an attachment key: a binary blob becomes a placeholder, text is scrubbed inside.
+            out = scrub_payload_value(val, lambda s: sanitize_base64_value(s, lambda t: scrub_val_fn(path, t, key_name)), attachment=True)
+            if out is not None:
+                return out
         return scrub_val_fn(path, val, key_name)
 
     if isinstance(data, dict):
