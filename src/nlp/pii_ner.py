@@ -24,7 +24,7 @@ _NORM_INDIAN_NAMES = {normalize_name_token(n) for n in COMMON_INDIAN_NAMES if le
 
 # ------------------------------------------------------------------ Context patterns
 _LABEL_NAME_RE = re.compile(
-    r"(?i)(?:(?:\b(?:Patient(?:'s)?[ \t]+Name|Pt\.?[ \t]*(?:Full[ \t]+)?Name|Name|Naam|Patient|Pt|Beneficiary|Insured(?:[ \t]+Person)?|Member|Rogi|Client)|रोगी|मरीज़[ \t]+का[ \t]+नाम|मरीज[ \t]+का[ \t]+नाम|रोगी[ \t]+का[ \t]+नाम|नाम)[ \t]*[:\-][ \t]*"
+    r"(?i)(?:(?:\b(?:Patient(?:'s)?[ \t]+Name|Pt\.?[ \t]*(?:Full[ \t]+)?Name|Name|Naam|Patient|Pt|Beneficiary|Insured(?:[ \t]+Person)?|Member|Rogi|Client)|रोगी|मरीज़|मरीज़|मरीज|मरीज़[ \t]+का[ \t]+नाम|मरीज[ \t]+का[ \t]+नाम|रोगी[ \t]+का[ \t]+नाम|नाम)[ \t]*[:\-][ \t]*"
     r"|\bReport[ \t]+of[ \t]+)"
     r"([^\n,;|\[\]]{2,55})"
 )

@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAKSHA · Secret Wards privacy firewall</title>
+<style>
+:root{--bg:#0b1020;--panel:#121a33;--panel2:#18223f;--line:#24305a;--text:#e8ecf8;--muted:#93a0c4;--accent:#5eead4;--accent2:#818cf8;
+--red:#fb7185;--redbg:rgba(251,113,133,.18);--green:#34d399;--greenbg:rgba(52,211,153,.18);--amber:#fbbf24}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(1200px 600px at 10% -10%,#1b2a5c 0,transparent 60%),radial-gradient(900px 500px at 100% 0,#0f3b46 0,transparent 55%),var(--bg);
+color:var(--text);font:15px/1.5 "Segoe UI",system-ui,-apple-system,"Noto Sans","Noto Sans Devanagari",sans-serif;min-height:100vh}
+header{display:flex;align-items:center;gap:16px;padding:18px 28px;border-bottom:1px solid var(--line);background:rgba(11,16,32,.6);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5}
+.logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;font-weight:800;color:#0b1020;font-size:20px}
+h1{font-size:20px;margin:0;letter-spacing:.3px}
+.tag{color:var(--muted);font-size:13px}
+.pill{margin-left:auto;font-size:12px;color:var(--muted);border:1px solid var(--line);padding:5px 10px;border-radius:999px}
+main{max-width:1400px;margin:0 auto;padding:22px 28px 60px}
+.card{background:linear-gradient(180deg,var(--panel),#0f1630);border:1px solid var(--line);border-radius:16px;padding:18px 20px}
+.run{display:grid;grid-template-columns:1fr 220px auto auto;gap:12px;align-items:end}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.6px}
+input[type=text],textarea,select{width:100%;background:#0a1128;border:1px solid var(--line);color:var(--text);border-radius:10px;padding:11px 12px;font:inherit}
+textarea{min-height:190px;font-family:ui-monospace,Consolas,monospace;font-size:13.5px}
+button{background:linear-gradient(135deg,var(--accent),#38bdf8);color:#05202a;border:0;border-radius:10px;padding:11px 18px;font-weight:700;cursor:pointer;font:inherit;font-weight:700;white-space:nowrap}
+button.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:wait}
+.status{margin-top:12px;color:var(--muted);font-size:14px;min-height:22px}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--muted);border-top-color:var(--accent);border-radius:50%;animation:s 0.8s linear infinite;vertical-align:-2px;margin-right:8px}
+@keyframes s{to{transform:rotate(360deg)}}
+.tabs{display:flex;gap:6px;margin:22px 0 14px;flex-wrap:wrap}
+.tab{padding:9px 16px;border-radius:999px;border:1px solid var(--line);color:var(--muted);cursor:pointer;user-select:none}
+.tab.on{background:var(--panel2);color:var(--text);border-color:var(--accent2)}
+.hidden{display:none!important}
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.stat b{display:block;font-size:28px;letter-spacing:.3px}
+.stat span{color:var(--muted);font-size:12.5px}
+.stat.g b{color:var(--green)} .stat.a b{color:var(--accent)} .stat.v b{color:var(--accent2)} .stat.y b{color:var(--amber)}
+.two{display:grid;grid-template-columns:1.2fr 1fr;gap:14px;margin-top:14px}
+.bar{display:grid;grid-template-columns:150px 1fr 60px;gap:10px;align-items:center;margin:6px 0;font-size:13.5px}
+.bar i{display:block;height:10px;border-radius:6px;background:linear-gradient(90deg,var(--accent2),var(--accent))}
+.bar em{font-style:normal;color:var(--muted);text-align:right}
+h3{margin:0 0 10px;font-size:15px}
+.chips span{display:inline-block;margin:4px 6px 0 0;padding:4px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+.files{display:grid;grid-template-columns:330px 1fr;gap:14px}
+.flist{max-height:72vh;overflow:auto;padding:6px}
+.fi{padding:8px 10px;border-radius:10px;cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center;word-break:break-all}
+.fi:hover{background:var(--panel2)} .fi.on{background:var(--panel2);outline:1px solid var(--accent2)}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--green)}
+.dot.q{background:var(--red)} .dot.r{background:var(--amber)}
+.diff{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+pre{margin:0;white-space:pre-wrap;word-break:break-word;font:12.8px/1.55 ui-monospace,Consolas,"Noto Sans Mono","Noto Sans Devanagari",monospace;
+background:#0a1128;border:1px solid var(--line);border-radius:12px;padding:14px;max-height:68vh;overflow:auto}
+pre .o{background:var(--redbg);color:#ffd5dc;border-radius:4px;text-decoration:line-through;text-decoration-color:rgba(251,113,133,.6)}
+pre .n{background:var(--greenbg);color:#c9ffe9;border-radius:4px}
+.ph{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px;color:var(--muted)}
+.ph b{color:var(--text)}
+.badge{font-size:11.5px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.badge.Devanagari{color:#fbcfe8;border-color:#9d174d} .badge.Hinglish{color:#fde68a;border-color:#92400e} .badge.English{color:#bfdbfe;border-color:#1e40af}
+.cl{margin-bottom:12px}
+.clh{display:flex;gap:10px;align-items:center;cursor:pointer}
+.psn{font-family:ui-monospace,Consolas,monospace;font-weight:700;color:var(--accent);font-size:15px}
+.rec{display:grid;grid-template-columns:240px 1fr 1fr;gap:10px;font-size:12.5px;border-top:1px dashed var(--line);padding:8px 0}
+.rec .f{color:var(--muted);word-break:break-all}
+.rec .o{color:#ffd5dc} .rec .s{color:#c9ffe9}
+.proof{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:14px}
+.note{color:var(--muted);font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.empty{padding:50px;text-align:center;color:var(--muted)}
+@media (max-width:1000px){.grid{grid-template-columns:repeat(3,1fr)}.files,.two,.diff{grid-template-columns:1fr}.run{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">R</div>
+  <div><h1>RAKSHA · privacy firewall</h1><div class="tag">Team Poker Face · Track 3 Secret Wards · offline, CPU-only, no LLMs</div></div>
+  <div class="pill" id="runinfo">no run yet</div>
+</header>
+<main>
+  <section class="card">
+    <div class="run">
+      <div><label>Input folder (hospital export dump)</label><input id="inp" type="text" placeholder="C:\path\to\dev\input"></div>
+      <div><label title="Use a long random value: the firewall refuses to release any file that contains its own secret">RAKSHA_SECRET (long, random)</label><input id="sec" type="text" value="stage-demo-secret"></div>
+      <button id="go">Sanitise folder</button>
+      <button class="ghost" id="up">Upload folder…</button>
+      <input id="dir" type="file" webkitdirectory multiple class="hidden">
+    </div>
+    <div class="status" id="st">Pick a folder and press <b>Sanitise folder</b>. The pipeline runs exactly as the judges run it: <code>python main.py --input … --output …</code></div>
+  </section>
+
+  <div class="tabs" id="tabs">
+    <div class="tab on" data-t="ov">Overview</div>
+    <div class="tab" data-t="fl">Files: before / after</div>
+    <div class="tab" data-t="pt">Linked patients</div>
+    <div class="tab" data-t="tr">Try it live</div>
+    <div class="tab" data-t="pr">Privacy proof</div>
+  </div>
+
+  <section id="ov"><div class="empty">Run the firewall to see the summary.</div></section>
+
+  <section id="fl" class="hidden"><div class="empty">Run the firewall first.</div></section>
+
+  <section id="pt" class="hidden"><div class="empty">Run the firewall first.</div></section>
+
+  <section id="tr" class="hidden">
+    <div class="card">
+      <div style="display:grid;grid-template-columns:1fr 160px auto;gap:12px;align-items:end">
+        <div><label>Paste any note, CSV or JSON (English, हिन्दी, Hinglish)</label></div>
+        <div><label>Type</label><select id="kind"><option value="note">Text note</option><option value="csv">CSV</option><option value="json">JSON</option></select></div>
+        <button id="trygo">Sanitise text</button>
+      </div>
+      <textarea id="txt">DISCHARGE SUMMARY - City Hospital, Ward 7 (Surgery), Bed 12
+Patient: Mohammad Arif (52/M), S/o Rahim Khan, UHID: CH/26/084511
+Ph: +91 98765 43210, Aadhaar 4567 8912 3456, H.No. 18, Mohalla Qazipura, village Bithauli, PIN 261001
+Admitted 03/03/2026, discharged 12/03/2026 (9 days). C/O fever x 3 days, K/C/O DM, H/O Koch's 2019.
+Dr. Ramesh Iyer reviewed. Rx: Dolo 650 BD x 5 days, Metformin 500 mg 1-0-1. BP 150/90, Hb 11.2 g/dL.
+Arif sahab ka BP 150/90 tha, unke bete Imran ne bataya ki dawai nahi li. Referred by ASHA worker.
+मरीज़: मोहम्मद आरिफ, पिता: रहीम खान, मोबाइल ९८७६५४३२१०, भर्ती 3 मार्च 2026</textarea>
+      <div class="status" id="trst"></div>
+    </div>
+    <div class="diff" id="trout" style="margin-top:14px"></div>
+  </section>
+
+  <section id="pr" class="hidden">
+    <div class="card">
+      <h3>Same input, a different secret: can anyone link the two releases?</h3>
+      <p class="note">Re-runs the same folder with a new <code>RAKSHA_SECRET</code>. Pseudonyms and date shifts are keyed HMACs, so a new secret
+      must give completely different pseudonyms while the <i>linkage itself</i> (which records belong together) stays the same.</p>
+      <button id="rot">Run again with a new secret</button>
+      <div class="status" id="rotst"></div>
+      <div class="proof" id="proof"></div>
+    </div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let JOB = null, FILES = [], CUR = -1;
+const api = async (url, body) => {
+  const r = await fetch(url, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {});
+  const j = await r.json(); if (j.error) throw new Error(j.error); return j;
+};
+async function wait(job, el) {
+  for (;;) {
+    const s = await api("/api/status?job=" + job);
+    if (s.state === "done") return s;
+    if (s.state === "error") throw new Error(s.error);
+    el.innerHTML = `<span class="spin"></span>Sanitising… ${s.elapsed}s`;
+    await new Promise(r => setTimeout(r, 400));
+  }
+}
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === t));
+  ["ov","fl","pt","tr","pr"].forEach(id => $("#" + id).classList.toggle("hidden", id !== t.dataset.t));
+  if (t.dataset.t === "pt" && JOB && !$("#pt").dataset.loaded) loadPatients();
+});
+const QS = new URLSearchParams(location.search);
+api("/api/config").then(c => { if (c.default_input) $("#inp").value = c.default_input; if (QS.get("run")) $("#go").click(); if (QS.get("job")) { JOB = QS.get("job"); loadSummary(); } });
+
+async function start(promise) {
+  $("#go").disabled = $("#up").disabled = true;
+  try {
+    const {job} = await promise; const s = await wait(job, $("#st"));
+    JOB = job; $("#pt").dataset.loaded = "";
+    $("#st").innerHTML = `✅ Done in <b>${s.seconds}s</b> · output is in a temporary folder (deleted when the UI stops)`;
+    await loadSummary();
+  } catch (e) { $("#st").innerHTML = "❌ " + esc(e.message); }
+  $("#go").disabled = $("#up").disabled = false;
+}
+$("#go").onclick = () => start(api("/api/run", {input: $("#inp").value.trim(), secret: $("#sec").value}));
+$("#up").onclick = () => $("#dir").click();
+$("#dir").onchange = async ev => {
+  const fs = [...ev.target.files]; if (!fs.length) return;
+  $("#st").innerHTML = `<span class="spin"></span>Reading ${fs.length} files…`;
+  const files = await Promise.all(fs.map(f => new Promise(res => {
+    const r = new FileReader(); r.onload = () => res({path: f.webkitRelativePath.split("/").slice(1).join("/") || f.name, b64: r.result.split(",")[1] || ""});
+    r.readAsDataURL(f);
+  })));
+  start(api("/api/upload", {files, secret: $("#sec").value, label: fs[0].webkitRelativePath.split("/")[0]}));
+};
+
+const num = n => (n ?? 0).toLocaleString("en-IN");
+async function loadSummary() {
+  const s = await api("/api/summary?job=" + JOB); FILES = s.files;
+  const c = s.counts;
+  $("#runinfo").textContent = `${s.label} · ${s.seconds}s · ${num(s.resources.peak_rss_mb)} MB`;
+  const ents = Object.entries(s.entities).sort((a,b) => b[1]-a[1]); const mx = ents.length ? ents[0][1] : 1;
+  const q = s.files.filter(f => f.status !== "sanitized");
+  $("#ov").innerHTML = `
+  <div class="grid">
+    <div class="stat a"><b>${num(c.files_total)}</b><span>files received</span></div>
+    <div class="stat g"><b>${num(c.files_sanitized)}</b><span>files sanitised</span></div>
+    <div class="stat y"><b>${num(c.files_quarantined)}</b><span>quarantined (never copied out)</span></div>
+    <div class="stat v"><b>${num(c.identifiers_detected)}</b><span>personal identifiers removed</span></div>
+    <div class="stat a"><b>${num(s.patients)}</b><span>patients (stable pseudonyms)</span></div>
+    <div class="stat g"><b>${num(s.linked)}/${num(s.records)}</b><span>records linked to a patient</span></div>
+  </div>
+  <div class="two">
+    <div class="card"><h3>What was found and removed</h3>${ents.map(([k,v]) =>
+      `<div class="bar"><span>${esc(k)}</span><i style="width:${Math.max(2, 100*v/mx)}%"></i><em>${num(v)}</em></div>`).join("") || '<p class="note">none</p>'}</div>
+    <div class="card"><h3>Release report</h3>
+      <table>
+        <tr><th>Records processed</th><td>${num(c.records_processed)}</td></tr>
+        <tr><th>Records generalised (age bands, PIN, tehsil)</th><td>${num(c.records_generalized)}</td></tr>
+        <tr><th>Records suppressed</th><td>${num(c.records_suppressed)}</td></tr>
+        <tr><th>File names renamed (they contained PII)</th><td>${num(s.renamed)}</td></tr>
+        <tr><th>Run time / peak memory</th><td>${s.timing.seconds}s / ${num(s.resources.peak_rss_mb)} MB</td></tr>
+      </table>
+      <h3 style="margin-top:14px">Input by folder</h3>
+      <div class="chips">${Object.entries(s.by_dir).map(([k,v]) => `<span>${esc(k)} · ${v}</span>`).join("")}</div>
+      ${q.length ? `<h3 style="margin-top:14px">Quarantined safely</h3><table>${q.map(f =>
+        `<tr><td>${esc(f.input)}</td><td class="note">${esc(f.reason || f.status)}</td></tr>`).join("")}</table>` : ""}
+    </div>
+  </div>`;
+  $("#fl").innerHTML = `<div class="files"><div class="card flist" id="flist">${s.files.map((f,i) =>
+    `<div class="fi" data-i="${i}"><span class="dot ${f.status!=="sanitized"?"q":f.renamed?"r":""}"></span>${esc(f.input)}</div>`).join("")}</div>
+    <div id="fview"><div class="card empty">Pick a file on the left. <span style="color:var(--green)">●</span> sanitised ·
+    <span style="color:var(--amber)">●</span> renamed (PII in file name) · <span style="color:var(--red)">●</span> quarantined</div></div></div>`;
+  document.querySelectorAll(".fi").forEach(el => el.onclick = () => showFile(+el.dataset.i));
+  const first = s.files.findIndex(f => /discharge|notes|prescription/.test(f.input) && f.status === "sanitized");
+  if (first >= 0) showFile(first);
+  const t = QS.get("tab"); if (t) document.querySelector(`.tab[data-t="${t}"]`)?.click();
+}
+const render = (a, cls) => a.map(([t,c]) => c ? `<span class="${cls}">${esc(t)}</span>` : esc(t)).join("");
+async function showFile(i) {
+  CUR = i; document.querySelectorAll(".fi").forEach(el => el.classList.toggle("on", +el.dataset.i === i));
+  $("#fview").innerHTML = `<div class="card"><span class="spin"></span>loading…</div>`;
+  const v = await api(`/api/file?job=${JOB}&i=${i}`); const f = v.file;
+  const right = f.status === "sanitized"
+    ? `<div><div class="ph"><span><b>Sanitised release</b> · ${esc(f.output.replace(/^sanitized\//,""))}${f.renamed?' <span class="badge Hinglish">renamed</span>':""}</span><span>${v.records} record(s) linked</span></div><pre>${render(v.san,"n")}</pre></div>`
+    : `<div><div class="ph"><b>Quarantined</b></div><div class="card"><p>This file was <b>not</b> released. Reason: <code>${esc(f.reason||f.status)}</code></p>
+       <p class="note">Unsupported, malformed or unsafe files are never copied into <code>sanitized/</code>; they are listed in report.json by SHA-256 only.</p></div></div>`;
+  $("#fview").innerHTML = `<div class="diff"><div><div class="ph"><b>Original input</b><span>${esc(f.input)}</span></div><pre>${render(v.orig,"o")}</pre></div>${right}</div>
+    ${v.truncated ? '<p class="note">Large file: first part shown.</p>' : ""}`;
+}
+async function loadPatients() {
+  $("#pt").innerHTML = `<div class="card"><span class="spin"></span>loading patients…</div>`;
+  const p = await api("/api/patients?job=" + JOB); $("#pt").dataset.loaded = "1";
+  $("#pt").innerHTML = `<div class="card" style="margin-bottom:12px"><b>${num(p.total)}</b> patients carry a stable keyed pseudonym across files,
+    hospitals and scripts; <b>${num(p.unlinked)}</b> records were deliberately left unlinked because the evidence was too weak
+    (a wrong merge costs more than a missed link). Patients seen in several scripts are listed first. Click one to see its records.</div>` +
+    p.clusters.map((c, k) => `<div class="card cl"><div class="clh" data-k="${k}"><span class="psn">${esc(c.psn)}</span>
+      <span class="note">${c.n} records · ${c.files} files</span>${c.scripts.map(s => `<span class="badge ${s}">${s}</span>`).join("")}
+      <span class="note" style="margin-left:auto">▾</span></div><div class="recs hidden" id="rc${k}">
+      <div class="rec"><b class="note">record</b><b class="note">original</b><b class="note">released</b></div>
+      ${c.items.map(r => `<div class="rec"><div class="f">${esc(r.file)}<br>${esc(r.loc)} <span class="badge ${r.script}">${r.script}</span></div>
+        <div class="o">${esc(r.orig)}</div><div class="s">${esc(r.san)}</div></div>`).join("")}</div></div>`).join("");
+  document.querySelectorAll(".clh").forEach(el => el.onclick = () => $("#rc" + el.dataset.k).classList.toggle("hidden"));
+}
+$("#trygo").onclick = async () => {
+  $("#trygo").disabled = true; $("#trout").innerHTML = "";
+  try {
+    const {job} = await api("/api/try", {text: $("#txt").value, kind: $("#kind").value, secret: $("#sec").value});
+    const s = await wait(job, $("#trst"));
+    const sum = await api("/api/summary?job=" + job);
+    const v = await api(`/api/file?job=${job}&i=0`);
+    $("#trst").innerHTML = `✅ ${s.seconds}s · ${num(sum.counts.identifiers_detected)} identifiers removed · medical values, doses, doctors and dates (shifted) kept`;
+    $("#trout").innerHTML = v.file.status === "sanitized"
+      ? `<div><div class="ph"><b>Original</b></div><pre>${render(v.orig,"o")}</pre></div><div><div class="ph"><b>Released</b></div><pre>${render(v.san,"n")}</pre></div>`
+      : `<div class="card">Quarantined: <code>${esc(v.file.reason)}</code> (e.g. malformed JSON)</div>`;
+  } catch (e) { $("#trst").innerHTML = "❌ " + esc(e.message); }
+  $("#trygo").disabled = false;
+};
+$("#rot").onclick = async () => {
+  if (!JOB) { $("#rotst").textContent = "Run the firewall on a folder first."; return; }
+  $("#rot").disabled = true; $("#proof").innerHTML = "";
+  try {
+    const {job} = await api("/api/rotate", {job: JOB, secret: "rotated-" + Math.random().toString(36).slice(2)});
+    await wait(job, $("#rotst"));
+    const c = await api(`/api/compare?a=${JOB}&b=${job}`);
+    $("#rotst").innerHTML = "✅ Second release produced with a fresh secret.";
+    $("#proof").innerHTML = `
+      <div class="stat g"><b>${num(c.same_psn)}/${num(c.records)}</b><span>records with the same pseudonym in both releases</span></div>
+      <div class="stat g"><b>${num(c.psn_overlap)}</b><span>pseudonyms shared between releases (of ${num(c.psns)})</span></div>
+      <div class="stat a"><b>${c.linkage_same ? "identical" : "differs"}</b><span>patient grouping (linkage quality is secret-independent)</span></div>
+      <div class="stat v"><b>${num(c.files - c.identical_files)}/${num(c.files)}</b><span>released files that changed (new pseudonyms + date shifts)</span></div>
+      ${c.example ? `<div class="card" style="grid-column:1/-1"><span class="note">Example: ${esc(c.example.record)}</span><br>
+        release 1 → <span class="psn">${esc(c.example.a)}</span> &nbsp; release 2 → <span class="psn">${esc(c.example.b)}</span></div>` : ""}`;
+  } catch (e) { $("#rotst").innerHTML = "❌ " + esc(e.message); }
+  $("#rot").disabled = false;
+};
+</script>
+</body>
+</html>

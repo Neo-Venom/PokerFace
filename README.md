@@ -34,6 +34,24 @@ Run the synthetic unit test suite:
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
+### Live demo UI (presentation only)
+
+`ui/` is an optional local web page for live demos. It is **not** part of the judged run (`raksha.toml` and
+`main.py` are unchanged and never import it). It starts the unchanged pipeline as a separate process
+(`python main.py --input … --output …`, exactly like the evaluator) and visualises the result. Standard library
+only, bound to `127.0.0.1`, all outputs in temporary folders deleted on exit.
+
+```bash
+pip install -r requirements.txt
+python ui/server.py              # opens http://127.0.0.1:8765  (--port N, --no-browser)
+```
+
+Tabs: **Overview** (files, identifiers removed by type, quarantine reasons, timing) · **Files: before / after**
+(original vs released, side by side, removed text highlighted) · **Linked patients** (one keyed pseudonym across
+English, Devanagari and Hinglish records) · **Try it live** (paste a note / CSV / JSON) · **Privacy proof**
+(re-run with a new secret: 0 pseudonyms shared, identical grouping). Use a long random `RAKSHA_SECRET`: the
+firewall refuses to release a file that contains its own secret.
+
 ---
 
 ## 2. System Architecture
