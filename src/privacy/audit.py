@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import csv
+import io
 import gzip
 import json
 from dataclasses import dataclass
@@ -124,6 +126,37 @@ def _parse_json_output(txt: str, jsonl: bool) -> Any:
     return [json.loads(ln, parse_constant=_no_const) for ln in txt.splitlines() if ln.strip()]
 
 
+def _rescrub_text_targeted(
+    txt: str, entry: FileEntry | None, guard: MedicalGuard, harvester: PiiHarvester, secret_str: str
+) -> str:
+    """Re-scrub only what is still dirty. A CSV/TSV is re-scrubbed cell by cell (a whole row re-read as free text
+    loses its column context: 6-digit lab values look like PINs, dates like IDs); other text line by line."""
+    def _fix(piece: str) -> str:
+        if not piece or not _has_residual_pii(piece, guard, harvester, secret_str):
+            return piece
+        return resolve_and_scrub(piece, guard, harvester)[0]
+
+    if entry is not None and entry.file_type in ("csv", "tsv"):
+        delim = entry.delimiter or (chr(9) if entry.file_type == "tsv" else ",")
+        try:
+            rows = list(csv.reader(io.StringIO(txt, newline=""), delimiter=delim))
+        except csv.Error:
+            rows = None
+        if rows is not None:
+            changed = False
+            for r in rows:
+                for i, cell in enumerate(r):
+                    fixed = _fix(cell)
+                    if fixed != cell:
+                        r[i], changed = fixed, True
+            if not changed:
+                return txt
+            buf = io.StringIO()
+            csv.writer(buf, delimiter=delim, lineterminator=chr(10)).writerows(rows)
+            return buf.getvalue()
+    return "".join(_fix(ln) for ln in txt.splitlines(keepends=True))
+
+
 def run_egress_audit(
     entries: list[FileEntry],
     san_dir: Path,
@@ -182,8 +215,7 @@ def run_egress_audit(
                     rescrubbed = _scrub_json_tree_fallback(data, guard, harvester, preserve_struct=is_fhir)
                     new_txt = json.dumps(rescrubbed, ensure_ascii=False, indent=2) + "\n"
                 else:
-                    lines = txt.splitlines(keepends=True)
-                    new_txt = "".join(resolve_and_scrub(ln, guard, harvester)[0] for ln in lines)
+                    new_txt = _rescrub_text_targeted(txt, entry, guard, harvester, secret_str)
                 dest.write_text(new_txt, encoding="utf-8", newline="")
                 summary.rescrubbed_files += 1
                 txt = new_txt

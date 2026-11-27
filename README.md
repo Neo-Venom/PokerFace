@@ -1,6 +1,6 @@
 # Project RAKSHA — Bilingual Clinical Privacy Firewall & Record Linkage Engine
 
-**Track 3 · Secret Wards** · **Team Poker Face** · Repository: `https://github.com/suyashkrishangarg/PokerFace`
+**Track 3 · Secret Wards** · **Team Poker Face** (Suyash Krishan Garg, Manish Yadav, Shubh Singh Rajput, Khushi Sarawagi) · Repository: `https://github.com/suyashkrishangarg/PokerFace`
 
 Project RAKSHA is an **offline, CPU-only, LLM-free Two-Pass Hybrid Privacy Firewall** for messy, multi-hospital Indian healthcare exports (CSVs, TSVs, deeply nested JSONs, FHIR R4 Bundles, HL7 CDA XML, and free-text English/Devanagari/Hinglish clinical notes and WhatsApp forwards). It strips direct identifiers and hidden-channel leaks while preserving clinical facts, builds longitudinal patient links across scripts and facilities under keyed HKDF-HMAC pseudonyms (`PSN-XXXXXXXX`), defends against demographic and temporal re-identification attacks (`A1–A7`), and enforces a fail-closed pre-emission egress audit gate.
 
