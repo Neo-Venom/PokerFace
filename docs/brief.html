@@ -1,73 +1,185 @@
-<!doctype html><html><head><meta charset="utf-8"><title>Project RAKSHA - Project Brief</title><style>
-@page { size: A4; margin: 10mm 11mm; }
-body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10pt; line-height: 1.22; color: #1d1d1f; margin: 0; }
-h1 { font-size: 14pt; margin: 0 0 1px 0; }
-h2 { font-size: 11pt; margin: 5px 0 2px 0; padding-bottom: 1px; border-bottom: 1px solid #c9ccd1; }
-p { margin: 1px 0 3px 0; }
-ul { margin: 1px 0 3px 15px; padding: 0; }
-li { margin: 0; }
-.sub { color: #444; font-size: 10pt; margin-bottom: 3px; }
-table { border-collapse: collapse; width: 100%; font-size: 10pt; margin: 2px 0 3px 0; }
-th, td { border: 1px solid #c9ccd1; padding: 1px 3px; text-align: left; vertical-align: top; }
-th { background: #eef1f5; }
-td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.flow { display: flex; gap: 3px; align-items: stretch; margin: 3px 0; }
-.box { flex: 1; border: 1px solid #8a94a6; border-radius: 4px; padding: 2px 4px; font-size: 10pt; background: #f7f8fa; line-height: 1.15; }
-.box b { display: block; }
-.arrow { align-self: center; font-size: 11pt; color: #8a94a6; }
-code { font-family: Consolas, monospace; font-size: 10pt; }
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>RAKSHA - Team Poker Face - Project Brief</title><style>
+@page { size: A4; margin: 9mm 10mm; }
+* { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+:root { --navy:#1d2b53; --ink:#141a2e; --muted:#4a5270; --line:#d6dbe7; --soft:#f3f5fa; --blue:#1f8fe0; --green:#00a83a; --yellow:#ffec27; --pink:#e0457b; --orange:#f08a00; }
+body { font-family: 'Segoe UI', 'Nirmala UI', Arial, sans-serif; font-size: 10pt; line-height: 1.27; color: var(--ink); margin: 0; }
+h2 { font-size: 11.5pt; margin: 7px 0 4px; color: var(--navy); display: flex; align-items: center; gap: 7px; }
+h2 .no { background: var(--navy); color: var(--yellow); font-size: 10pt; width: 19px; height: 19px; display: inline-grid; place-items: center; border-radius: 3px; }
+h2::after { content: ""; flex: 1; height: 2px; background: linear-gradient(90deg, var(--line), transparent); }
+p { margin: 2px 0 4px; }
+ul { margin: 2px 0 4px 15px; padding: 0; }
+li { margin: 0 0 2px; }
+code { font-family: Consolas, monospace; font-size: 10pt; background: var(--soft); padding: 0 2px; border-radius: 2px; }
+b.g { color: var(--green); }
+.hero { background: var(--navy); color: #fff; border-radius: 8px; padding: 10px 14px 10px 12px; display: flex; gap: 12px; align-items: center; }
+.hero h1 { margin: 0; font-size: 16pt; letter-spacing: .3px; }
+.hero h1 span { color: var(--yellow); }
+.hero .tag { font-size: 10.5pt; color: #dfe6ff; margin-top: 1px; }
+.hero .meta { font-size: 10pt; color: #aab6dd; margin-top: 3px; }
+.pitch { margin: 6px 0 2px; font-size: 10.5pt; }
+.kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 7px 0 2px; }
+.kpi { background: var(--soft); border: 1px solid var(--line); border-top: 3px solid var(--blue); border-radius: 5px; padding: 4px 6px; }
+.kpi b { display: block; font-size: 14pt; color: var(--navy); line-height: 1.1; }
+.kpi span { font-size: 10pt; color: var(--muted); line-height: 1.15; display: block; }
+.kpi.g { border-top-color: var(--green); } .kpi.y { border-top-color: var(--orange); } .kpi.p { border-top-color: var(--pink); }
+svg text { font-family: 'Segoe UI', Arial, sans-serif; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.card { background: var(--soft); border: 1px solid var(--line); border-left: 4px solid var(--blue); border-radius: 5px; padding: 5px 8px; margin-bottom: 5px; }
+.card.g { border-left-color: var(--green); } .card.p { border-left-color: var(--pink); } .card.y { border-left-color: var(--orange); }
+.card h4 { margin: 0 0 1px; font-size: 10.5pt; color: var(--navy); }
+.card p { margin: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 10pt; margin: 3px 0 4px; }
+th, td { padding: 2px 5px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+th:first-child, td:first-child { text-align: left; white-space: normal; }
+thead th { background: var(--navy); color: #fff; font-weight: 600; }
+thead th:first-child { border-top-left-radius: 4px; } thead th:last-child { border-top-right-radius: 4px; }
+tbody tr:nth-child(even) td { background: var(--soft); }
+td.ok { color: var(--green); font-weight: 600; }
+.note { color: var(--muted); }
+.page2 { break-before: page; }
+.foot span:last-child { white-space: nowrap; margin-left: 12px; }
+.foot { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10pt; display: flex; justify-content: space-between; }
 </style></head><body>
-<h1>1. Team Poker Face: RAKSHA, a privacy firewall that reads what a field contains, not what it is called</h1>
-<div class="sub">Track 3 Secret Wards · Members: Suyash Krishan Garg, Manish Yadav, Shubh Singh Rajput, Khushi Sarawagi · github.com/suyashkrishangarg/PokerFace · offline, CPU-only, no LLMs or pretrained models</div>
-<p><b>Pitch:</b> every field is judged by two independent signals, its label <i>and</i> its values, so unseen headers, ID formats and
-name pools still resolve; PII found anywhere is harvested and swept from every other channel, and one patient keeps one keyed pseudonym
-across English, Devanagari and Hinglish without merging different people.</p>
 
-<h2>2. Architecture</h2>
-<div class="flow">
-<div class="box"><b>Ingest</b>SHA-256, strict decode, quarantine, row repair</div><div class="arrow">→</div>
-<div class="box"><b>Profile</b>header synonyms + value shapes</div><div class="arrow">→</div>
-<div class="box"><b>Detect</b>clinical shield, ID shapes, context NER, sweep</div><div class="arrow">→</div>
-<div class="box"><b>Link</b>blocking, Fellegi–Sunter, vetoes, HMAC PSN</div><div class="arrow">→</div>
-<div class="box"><b>Privacy</b>date shift, age bands, roll-ups</div><div class="arrow">→</div>
-<div class="box"><b>Egress gate</b>re-scan → sanitized/, report, records</div>
+<div class="hero">
+  <svg width="46" height="50" viewBox="0 0 12 13" shape-rendering="crispEdges" aria-label="shield">
+    <g fill="#0b0f1e"><rect x="0" y="0" width="12" height="1"/><rect x="0" y="0" width="1" height="7"/><rect x="11" y="0" width="1" height="7"/>
+    <rect x="1" y="7" width="1" height="2"/><rect x="10" y="7" width="1" height="2"/><rect x="2" y="9" width="1" height="1"/><rect x="9" y="9" width="1" height="1"/>
+    <rect x="3" y="10" width="1" height="1"/><rect x="8" y="10" width="1" height="1"/><rect x="4" y="11" width="4" height="1"/></g>
+    <g fill="#29adff"><rect x="1" y="1" width="10" height="6"/><rect x="2" y="7" width="8" height="2"/><rect x="3" y="9" width="6" height="1"/><rect x="4" y="10" width="4" height="1"/></g>
+    <g fill="#ffec27"><rect x="5" y="1" width="2" height="9"/><rect x="2" y="3" width="8" height="2"/></g>
+  </svg>
+  <div>
+    <h1><span>RAKSHA</span> · Team Poker Face</h1>
+    <div class="tag">A privacy firewall that reads what a field <i>contains</i>, not what it is called</div>
+    <div class="meta">Track 3 Secret Wards · Suyash Krishan Garg, Manish Yadav, Shubh Singh Rajput, Khushi Sarawagi · github.com/Neo-Venom/PokerFace · offline · CPU only · no LLMs or pretrained models</div>
+  </div>
 </div>
 
-<h2>3. How each part works</h2>
-<ul>
-<li><b>Ingestion:</b> files are hashed and sniffed by bytes (JSON behind <code>.csv</code> is parsed). PDF/JPEG/XLSX/ZIP, XML with DTDs, truncated or <code>NaN</code> JSON, JSON deeper than 500, invalid UTF-8, free-text lines over 64 KiB and unsafe file names (<code>;</code> <code>$(</code> <code>..</code>) are quarantined; stray NUL bytes are blanked; ragged rows are repaired before profiling.</li>
-<li><b>Detection (3 scripts):</b> a clinical shield protects doctors, doses (<code>1-0-1</code>), labs, eponyms, wards, <code>K/C/O</code> and <code>C/O &lt;complaint&gt;</code>, with a lexicon learned at run time. Shape detectors catch any hospital ID, phones in any grouping, Aadhaar/ABHA/PAN and cue-less PINs. Context NER finds unlabelled people (<code>Pt X (62M)</code>, <code>unke pati X ne</code>, <code>पिता: X</code>, honorifics, mixed-script names). Pass-1 finds are swept from all channels after decoding %XX, entities, <code>\uXXXX</code>, base64, homoglyphs and zero-width tricks.</li>
-<li><b>Linkage &amp; pseudonyms:</b> Devanagari is romanised and folded; multi-key blocking feeds IDF-weighted Fellegi–Sunter scores; clusters merge by descending score under hard vetoes (sex, DOB, Aadhaar/ABHA/PAN, two IDs of one hospital system, conflicting names or relatives). Spelling or corrupted-age conflicts are waived only when two independent IDs agree; a record that fits two people equally stays <code>null</code>. PSNs are HKDF-derived HMAC, stable per secret.</li>
-<li><b>Privacy layer:</b> a per-patient HMAC date shift (30–180 days) keeps every stay and gap exact; truthful age bands; tehsil/PIN coarsened by cohort; rare diagnoses rolled up; impossible ages become <code>[AGE]</code>.</li>
-</ul>
+<h2><span class="no">1</span>Team &amp; pitch</h2>
+<p class="pitch">Every field is judged by two independent signals, its <b>label</b> and its <b>values</b>, so unseen headers, ID formats and name pools
+still resolve. PII found anywhere is harvested and swept from every other channel, and one patient keeps <b>one keyed pseudonym across English,
+Devanagari and Hinglish</b> without ever merging two different people.</p>
+<div class="kpis">
+  <div class="kpi g"><b>0 / 3,230</b><span>personal values leaked</span></div>
+  <div class="kpi g"><b>100%</b><span>medical values kept</span></div>
+  <div class="kpi"><b>F0.5 1.00</b><span>linking, 0 false merges</span></div>
+  <div class="kpi p"><b>0</b><span>canaries or raw copies</span></div>
+  <div class="kpi y"><b>99.6</b><span>unseen-style avg (est.)</span></div>
+  <div class="kpi"><b>5.8 s</b><span>per run · 70 MB · 2 CPUs</span></div>
+</div>
 
-<h2>4. USP</h2>
-<ul>
-<li><b>Header-agnostic:</b> labels and values are both evidence, so <code>holder</code>, <code>abode</code>, <code>रोगी</code> or a remarks column of "C/O fever" are classified correctly; no practice names or hospital codes in the code.</li>
-<li><b>Cross-script identity with safety rails:</b> मोहम्मद ≈ Md. ≈ Mohammad and नायर ≈ Nair link; homonyms, twins, a father and son with one name and phone, and spouses sharing a phone stay apart (0 false merges on every set).</li>
-<li><b>Tested on what we did not tune on:</b> a seeded adversarial generator with a held-out name/header pool and a hard level of hostile-export traps, scored with the toolkit's own checkers.</li>
-</ul>
+<h2><span class="no">2</span>Architecture</h2>
+<svg width="100%" viewBox="0 0 760 128" role="img" aria-label="pipeline">
+<defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8a94a6"/></marker></defs>
+<g transform="translate(0,2)"><rect width="120" height="92" rx="7" fill="#fff" stroke="#29adff" stroke-width="2.5"/><rect width="120" height="25" rx="7" fill="#29adff"/><rect y="18" width="120" height="7" fill="#29adff"/><text x="60.0" y="18" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">1 · Ingest</text>
+<text x="60.0" y="46" text-anchor="middle" font-size="14" fill="#141a2e">hash · sniff bytes</text>
+<text x="60.0" y="65" text-anchor="middle" font-size="14" fill="#141a2e">decode · repair</text>
+<text x="60.0" y="84" text-anchor="middle" font-size="14" fill="#c2185b">quarantine unsafe</text>
+</g>
+<line x1="121" y1="48.0" x2="127" y2="48.0" stroke="#8a94a6" stroke-width="2" marker-end="url(#ar)"/>
+<g transform="translate(128,2)"><rect width="120" height="92" rx="7" fill="#fff" stroke="#83769c" stroke-width="2.5"/><rect width="120" height="25" rx="7" fill="#83769c"/><rect y="18" width="120" height="7" fill="#83769c"/><text x="60.0" y="18" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">2 · Profile</text>
+<text x="60.0" y="46" text-anchor="middle" font-size="14" fill="#141a2e">label + values</text>
+<text x="60.0" y="65" text-anchor="middle" font-size="14" fill="#141a2e">EN · हिंदी · Hinglish</text>
+<text x="60.0" y="84" text-anchor="middle" font-size="14" fill="#141a2e">column roles</text>
+</g>
+<line x1="249" y1="48.0" x2="255" y2="48.0" stroke="#8a94a6" stroke-width="2" marker-end="url(#ar)"/>
+<g transform="translate(256,2)"><rect width="120" height="92" rx="7" fill="#fff" stroke="#e0457b" stroke-width="2.5"/><rect width="120" height="25" rx="7" fill="#e0457b"/><rect y="18" width="120" height="7" fill="#e0457b"/><text x="60.0" y="18" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">3 · Detect</text>
+<text x="60.0" y="46" text-anchor="middle" font-size="14" fill="#141a2e">clinical shield</text>
+<text x="60.0" y="65" text-anchor="middle" font-size="14" fill="#141a2e">ID shapes · NER</text>
+<text x="60.0" y="84" text-anchor="middle" font-size="14" fill="#141a2e">corpus sweep</text>
+</g>
+<line x1="377" y1="48.0" x2="383" y2="48.0" stroke="#8a94a6" stroke-width="2" marker-end="url(#ar)"/>
+<g transform="translate(384,2)"><rect width="120" height="92" rx="7" fill="#fff" stroke="#1f8fe0" stroke-width="2.5"/><rect width="120" height="25" rx="7" fill="#1f8fe0"/><rect y="18" width="120" height="7" fill="#1f8fe0"/><text x="60.0" y="18" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">4 · Link</text>
+<text x="60.0" y="46" text-anchor="middle" font-size="14" fill="#141a2e">cross-script</text>
+<text x="60.0" y="65" text-anchor="middle" font-size="14" fill="#141a2e">Fellegi–Sunter</text>
+<text x="60.0" y="84" text-anchor="middle" font-size="14" fill="#141a2e">vetoes · HMAC</text>
+</g>
+<line x1="505" y1="48.0" x2="511" y2="48.0" stroke="#8a94a6" stroke-width="2" marker-end="url(#ar)"/>
+<g transform="translate(512,2)"><rect width="120" height="92" rx="7" fill="#fff" stroke="#f08a00" stroke-width="2.5"/><rect width="120" height="25" rx="7" fill="#f08a00"/><rect y="18" width="120" height="7" fill="#f08a00"/><text x="60.0" y="18" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">5 · Privacy</text>
+<text x="60.0" y="46" text-anchor="middle" font-size="14" fill="#141a2e">keyed date shift</text>
+<text x="60.0" y="65" text-anchor="middle" font-size="14" fill="#141a2e">k-anon age bands</text>
+<text x="60.0" y="84" text-anchor="middle" font-size="14" fill="#141a2e">rare dx · l-div</text>
+</g>
+<line x1="633" y1="48.0" x2="639" y2="48.0" stroke="#8a94a6" stroke-width="2" marker-end="url(#ar)"/>
+<g transform="translate(640,2)"><rect width="120" height="92" rx="7" fill="#fff" stroke="#00a83a" stroke-width="2.5"/><rect width="120" height="25" rx="7" fill="#00a83a"/><rect y="18" width="120" height="7" fill="#00a83a"/><text x="60.0" y="18" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">6 · Egress gate</text>
+<text x="60.0" y="46" text-anchor="middle" font-size="14" fill="#141a2e">decode + re-scan</text>
+<text x="60.0" y="65" text-anchor="middle" font-size="14" fill="#141a2e">sanitized/ · report</text>
+<text x="60.0" y="84" text-anchor="middle" font-size="14" fill="#141a2e">records.jsonl</text>
+</g>
+<text x="380" y="120" text-anchor="middle" font-size="14" fill="#4a5270">Fail closed at every stage: an unsafe file is quarantined, never copied.</text>
+</svg>
 
-<h2>5. Privacy–utility trade-off (measured)</h2>
-<p>Official <code>validate_output.py</code>: CONTRACT OK on every set. Practice data via <code>check_dev.py</code>: 0 of 3,230 personal values visible
-(0.0% in Latin, Devanagari and Hinglish), 4,855/4,855 medical values kept, linking precision 1.00, recall 1.00, F0.5 1.00. Attack columns use our
-ATTACKS.md attacker (A3 record linkage, A4 pooled profile, A5 targeted with global-shift recovery) relative to the raw input.</p>
-<table><tr><th>Measured (3 runs per set)</th><th>Practice (dev)</th><th>Chaos s202</th><th>Chaos s303*</th><th>Gauntlet B31*</th><th>Hard H11*</th><th>A21 (6k rows)</th></tr><tr><td>Local score /100 (SCORING.md estimate)</td><td class='n'>99.5</td><td class='n'>99.4</td><td class='n'>99.4</td><td class='n'>99.7</td><td class='n'>99.7</td><td class='n'>99.7</td></tr><tr><td>Name tokens leaked (all scripts)</td><td class='n'>0.0%</td><td class='n'>0.0%</td><td class='n'>0.0%</td><td class='n'>0.0%</td><td class='n'>0.0%</td><td class='n'>0.0%</td></tr><tr><td>Direct IDs / full names / canaries surviving</td><td class='n'>0 / 0 / 0</td><td class='n'>0 / 0 / 0</td><td class='n'>0 / 0 / 0</td><td class='n'>0 / 0 / 0</td><td class='n'>0 / 0 / 0</td><td class='n'>0 / 0 / 0</td></tr><tr><td>Medical values kept</td><td class='n'>4855/4855</td><td class='n'>4855/4855</td><td class='n'>4855/4855</td><td class='n'>5054/5056</td><td class='n'>5070/5070</td><td class='n'>8648/8649</td></tr><tr><td>Linking F0.5 / false merges</td><td class='n'>1.00 / 0</td><td class='n'>1.00 / 0</td><td class='n'>1.00 / 0</td><td class='n'>1.00 / 0</td><td class='n'>1.00 / 0</td><td class='n'>1.00 / 0</td></tr><tr><td>Attack risk vs raw A3 / A4 / A5 (%)</td><td class='n'>2 / 4 / 4</td><td class='n'>2 / 2 / 4</td><td class='n'>2 / 2 / 4</td><td class='n'>3 / 0 / 1</td><td class='n'>2 / 0 / 1</td><td class='n'>2 / 0 / 2</td></tr><tr><td>Run time / peak RSS (2 pinned CPUs)</td><td class='n'>6 s / 68 MB</td><td class='n'>15 s / 69 MB</td><td class='n'>15 s / 69 MB</td><td class='n'>19 s / 142 MB</td><td class='n'>18 s / 142 MB</td><td class='n'>29 s / 266 MB</td></tr></table>
-<p>* held out: never used for tuning. A third-party stress suite (hostile files, homonyms, voter-list attacker) scores <b>98.4</b> and <b>98.9</b> on two seeds (0 canaries, 0/3,063 tokens leaked, 2,370/2,370 medical values). Merging the best of our team's eight prototypes raised the hidden-like average from 99.2 to <b>99.6</b>. A judge-style run (fresh venv, no network, 2 CPUs, cleared env) passes <code>check_submission.py</code>: same secret twice gives byte-identical output, a new secret shares 0 pseudonyms; renamed headers, unseen names and ID prefixes leak 0 names or IDs.</p>
-<p><b>Choices and cost.</b> Per-patient keyed shifts keep every interval and stay exact while a global shift would fall to A5. Age bands come from a k-anonymity planner over <i>distinct patients</i> (k = 5 on gender, district and band; l = 2 distinct conditions; 2k for patients with a rare condition): it picks the most specific truthful band (5 → 10 → 20 years → life stage) that keeps the class anonymous, so larger releases keep narrow bands and only small or rare cohorts widen. House, locality, landmark and village are removed, tehsil and PIN coarsen by cohort, districts stay. <b>Residual risk:</b> on the 48-patient practice release most bands must widen, which costs age-band utility; stays are kept exact by design, so a known stay plus a rare diagnosis remains the strongest attack.</p>
+<h2><span class="no">3</span>How each part works</h2>
+<div class="cols">
+  <div>
+    <div class="card"><h4>Ingestion</h4><p>Files are hashed and sniffed by bytes (JSON behind <code>.csv</code> is parsed); UTF-8/BOM/UTF-16/cp1252 decoded; ragged rows repaired.
+    PDF/JPEG/XLSX, DTD XML, truncated or <code>NaN</code> JSON, JSON deeper than 500, invalid UTF-8, 64 KiB+ lines and unsafe file names are quarantined.</p></div>
+    <div class="card p"><h4>Detection in 3 scripts</h4><p>A clinical shield (learned at run time) protects doctors, doses <code>1-0-1</code>, labs, eponyms, wards,
+    <code>K/C/O</code>, <code>C/O &lt;complaint&gt;</code>. Shape detectors catch any hospital ID, phones in any grouping, Aadhaar/ABHA/PAN, PINs. Context NER finds
+    unlabelled people (<code>Pt X (62M)</code>, <code>unke pati X ne</code>, <code>मरीज़: X</code>). Finds are swept from every channel after decoding %XX, entities,
+    <code>\uXXXX</code>, base64, homoglyphs and zero-width tricks.</p></div>
+  </div>
+  <div>
+    <div class="card"><h4>Linkage &amp; pseudonyms</h4><p>Devanagari is romanised and folded; multi-key blocking feeds IDF-weighted Fellegi–Sunter scores;
+    clusters merge under hard vetoes (sex, DOB, Aadhaar/ABHA/PAN, twins, father/son, two IDs of one hospital). Per-visit IDs never contradict;
+    weak fragments attach only with a clear margin; an ambiguous record stays <code>null</code>. PSNs are HKDF-keyed HMAC.</p></div>
+    <div class="card y"><h4>Privacy layer</h4><p>Per-patient keyed date shift (30–180 days) keeps every stay and interval exact. A k-anonymity planner over distinct
+    patients picks the most specific truthful age band; rare-condition patients need 2k; l-diversity on conditions; tehsil and PIN coarsen by cohort;
+    house, locality, landmark and village are removed.</p></div>
+  </div>
+</div>
 
-<h2>6. Security design ("assume the server is breached")</h2>
-<ul>
-<li>Nothing raw or intermediate is written: parsing is in memory, the input is read-only, quarantined originals are not copied (optional AES-256-GCM vault, AAD = file hash).</li>
-<li><code>RAKSHA_SECRET</code> is HKDF-split into pseudonym, shift, file-name and vault keys, removed from the environment and never written; different secrets give unlinkable releases.</li>
-<li>Logs carry counts only; the exception hook strips PII; nothing goes to TMP/HOME. An egress gate re-scans every output, file name, report and records (base64-decoded) before exit; CSV formulas are neutralised (OWASP).</li>
-</ul>
+<h2><span class="no">4</span>USP: what a plain PII tool does not do</h2>
+<div class="cols">
+  <div class="card g"><h4>Header-agnostic, never memorised</h4><p><code>holder</code>, <code>abode</code>, <code>रोगी</code> or a remarks column of "C/O fever"
+  are classified from label + values; no practice names, hospitals or ID prefixes in the code. Renamed headers, unseen names and new ID prefixes: 0 leaks.</p></div>
+  <div class="card g"><h4>Cross-script identity with safety rails</h4><p>मोहम्मद ≈ Md. ≈ Mohammad and नायर ≈ Nair link, while homonyms, twins, a father
+  and son sharing name and phone, and spouses sharing a phone stay apart: <b class="g">0 false merges on every set</b>. Best ideas of our team's 8 prototypes merged.</p></div>
+</div>
 
-<h2>7. Known limitations</h2>
+<div class="page2"></div>
+<h2><span class="no">5</span>Privacy–utility trade-off (measured, 3 runs per set)</h2>
+<p class="note">Official <code>validate_output.py</code>: CONTRACT OK on every set. Attack rows use our implementation of ATTACKS.md (A3 record linkage, A4 pooled profile,
+A5 targeted with global-shift recovery), as % of the same attack on the raw input. * = held out, never used for tuning.</p>
+<table>
+<thead><tr><th>Measure</th><th>Practice</th><th>Chaos s202</th><th>Chaos s303*</th><th>Gauntlet B31*</th><th>Hard H11*</th><th>Bulk A21 (6k rows)</th></tr></thead>
+<tbody>
+<tr><td>Local score /100 (SCORING.md estimate)</td><td>99.5</td><td>99.4</td><td>99.4</td><td>99.7</td><td>99.7</td><td>99.7</td></tr>
+<tr><td>Name tokens leaked (Latin / Devanagari / Hinglish)</td><td class="ok">0%</td><td class="ok">0%</td><td class="ok">0%</td><td class="ok">0%</td><td class="ok">0%</td><td class="ok">0%</td></tr>
+<tr><td>Direct IDs · full names · canaries surviving</td><td class="ok">0 · 0 · 0</td><td class="ok">0 · 0 · 0</td><td class="ok">0 · 0 · 0</td><td class="ok">0 · 0 · 0</td><td class="ok">0 · 0 · 0</td><td class="ok">0 · 0 · 0</td></tr>
+<tr><td>Medical values kept</td><td>4855/4855</td><td>4855/4855</td><td>4855/4855</td><td>5054/5056</td><td>5070/5070</td><td>8648/8649</td></tr>
+<tr><td>Linking F0.5 · false merges</td><td class="ok">1.00 · 0</td><td class="ok">1.00 · 0</td><td class="ok">1.00 · 0</td><td class="ok">1.00 · 0</td><td class="ok">1.00 · 0</td><td class="ok">1.00 · 0</td></tr>
+<tr><td>Attack risk vs raw, A3 · A4 · A5 (%)</td><td>2 · 4 · 4</td><td>2 · 2 · 4</td><td>2 · 2 · 4</td><td>3 · 0 · 1</td><td>2 · 0 · 1</td><td>2 · 0 · 2</td></tr>
+<tr><td>Run time · peak RSS (2 pinned CPUs)</td><td>6 s · 68 MB</td><td>15 s · 69 MB</td><td>15 s · 69 MB</td><td>19 s · 142 MB</td><td>18 s · 142 MB</td><td>29 s · 266 MB</td></tr>
+</tbody></table>
+<div class="cols">
+  <div class="card g"><h4>Generalisation evidence</h4><p>Third-party stress suite (hostile files, homonyms, voter-list attacker): <b>98.4</b> and <b>98.9</b> on two seeds,
+  0/3,063 tokens leaked, 2,370/2,370 medical values, 0 canaries. Merging the best of our 8 prototypes raised the unseen-style average from 99.2 to
+  <b>99.6</b>. A judge-style run (fresh venv, no network, 2 CPUs) passes <code>check_submission.py</code>: byte-identical repeats, 0 pseudonyms shared under a new secret.</p></div>
+  <div class="card y"><h4>Choices and their cost</h4><p>Per-patient keyed shifts keep every stay exact, where a global shift would fall to A5. Age bands
+  widen (5 → 10 → 20 years → life stage) only until the class of distinct patients is k-anonymous, so large releases keep narrow bands. Districts stay
+  (public, research value); everything below is removed or coarsened. <b>Residual risk:</b> small releases pay age-band precision; exact stays plus a
+  rare diagnosis remain the strongest attack, so those patients need 2k.</p></div>
+</div>
+
+<h2><span class="no">6</span>Security design: assume the server is breached</h2>
+<div class="cols">
+  <div class="card"><h4>Nothing raw at rest</h4><p>Parsing happens in memory, the input stays read-only, quarantined originals are never copied (optional AES-256-GCM vault
+  with the file hash as AAD). TMP and HOME stay empty.</p></div>
+  <div class="card"><h4>Keys away from data</h4><p><code>RAKSHA_SECRET</code> is HKDF-split into pseudonym, date-shift, file-name and vault keys, removed from
+  the environment and never written; a different secret gives an unlinkable release.</p></div>
+  <div class="card"><h4>PII-free logs</h4><p>Logs carry counts only; the exception hook strips messages; stdout is one count line.</p></div>
+  <div class="card"><h4>Egress gate</h4><p>Every output, file name, report and record is decoded (base64, %XX, entities) and re-scanned before exit; dirty cells are re-scrubbed, persistent leaks quarantined; CSV formulas neutralised.</p></div>
+</div>
+
+<h2><span class="no">7</span>Known limitations</h2>
 <ul>
-<li>Names written only in other Indic scripts (Tamil, Bengali) rely on context cues and structured-field harvest; no script-specific transliteration.</li>
+<li>Names written only in other Indic scripts (Tamil, Bengali) rely on context cues and structured-field harvest; there is no script-specific transliteration.</li>
 <li>English-origin names transliterate imperfectly (मैथ्यू ≠ Mathew): such records link only through a shared ID.</li>
-<li>Small releases trade age-band precision for anonymity (above); k, l and the rare-condition rule are policy knobs (<code>config/policy.yaml</code>).</li>
-<li>Attack numbers come from our implementation of ATTACKS.md; run times are measured pinned to 2 CPUs with no network, far inside the 15-minute limit.</li>
+<li>A single note processed alone has no corpus context: a bare village name with no cue can survive, and its age band widens to the safest range.</li>
+<li>Small releases trade age-band precision for anonymity; k, l and the rare-condition rule are policy knobs in <code>config/policy.yaml</code>.</li>
+<li>Attack numbers come from our implementation of ATTACKS.md, not the sealed evaluator; run times were measured pinned to 2 CPUs with no network.</li>
 </ul>
+<div class="foot"><span>Live demo: <code>python ui/server.py</code> (pixel-art control room, presentation only; the judged run is <code>python main.py</code>)</span><span>Team Poker Face · RAKSHA</span></div>
 </body></html>
