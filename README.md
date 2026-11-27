@@ -169,5 +169,5 @@ Verified on commit `aea3847f3e1bf84b6e5e732d247f6c6270a7f90c` (same runtime code
 5. **Some valid files are quarantined** by strict size/depth/filename caps (e.g., `max_json_depth: 500`, `64 KiB` line limit, or strict filename character filters observed on the Stress debugging set: `deep_1500.json`, `ocr_72kb.txt`, `ward;batch$2.csv`).
 6. **Some linked records lack the pseudonym inside the sanitized record** even when linked in `records.jsonl` (observed `9,713 / 9,829` consistency on the Synthetic debugging set).
 7. **Known-fact attacks remain a significant risk** (`A5 = 58.3%` in Practice attack simulation): exact length of stay plus clinical diagnoses remains identifying in small cohorts unless suppressed.
-8. **Zero leakage on unseen data is not guaranteed**; additionally, other Indic scripts beyond Latin/Devanagari (e.g., Tamil/Bengali) lack script-specific transliteration, and single-file runs lack cross-file corpus priors
+8. **Zero leakage on unseen data is not guaranteed**; additionally, other Indic scripts beyond Latin/Devanagari (e.g., Tamil/Bengali) lack script-specific transliteration, and single-file runs lack cross-file corpus priors.
 
