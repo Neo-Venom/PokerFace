@@ -3,115 +3,144 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RAKSHA · Secret Wards privacy firewall</title>
+<title>RAKSHA · pixel privacy firewall</title>
 <style>
-:root{--bg:#0b1020;--panel:#121a33;--panel2:#18223f;--line:#24305a;--text:#e8ecf8;--muted:#93a0c4;--accent:#5eead4;--accent2:#818cf8;
---red:#fb7185;--redbg:rgba(251,113,133,.18);--green:#34d399;--greenbg:rgba(52,211,153,.18);--amber:#fbbf24}
+:root{--k:#0b0f1e;--bg:#10162e;--navy:#1d2b53;--navy2:#29366f;--purple:#7e2553;--dgreen:#008751;--dgray:#5f574f;--lgray:#c2c3c7;
+--white:#fff1e8;--red:#ff004d;--orange:#ffa300;--yellow:#ffec27;--green:#00e436;--blue:#29adff;--lav:#83769c;--pink:#ff77a8;--peach:#ffccaa}
 *{box-sizing:border-box}
-body{margin:0;background:radial-gradient(1200px 600px at 10% -10%,#1b2a5c 0,transparent 60%),radial-gradient(900px 500px at 100% 0,#0f3b46 0,transparent 55%),var(--bg);
-color:var(--text);font:15px/1.5 "Segoe UI",system-ui,-apple-system,"Noto Sans","Noto Sans Devanagari",sans-serif;min-height:100vh}
-header{display:flex;align-items:center;gap:16px;padding:18px 28px;border-bottom:1px solid var(--line);background:rgba(11,16,32,.6);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5}
-.logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;font-weight:800;color:#0b1020;font-size:20px}
-h1{font-size:20px;margin:0;letter-spacing:.3px}
-.tag{color:var(--muted);font-size:13px}
-.pill{margin-left:auto;font-size:12px;color:var(--muted);border:1px solid var(--line);padding:5px 10px;border-radius:999px}
-main{max-width:1400px;margin:0 auto;padding:22px 28px 60px}
-.card{background:linear-gradient(180deg,var(--panel),#0f1630);border:1px solid var(--line);border-radius:16px;padding:18px 20px}
-.run{display:grid;grid-template-columns:1fr 220px auto auto;gap:12px;align-items:end}
-label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.6px}
-input[type=text],textarea,select{width:100%;background:#0a1128;border:1px solid var(--line);color:var(--text);border-radius:10px;padding:11px 12px;font:inherit}
-textarea{min-height:190px;font-family:ui-monospace,Consolas,monospace;font-size:13.5px}
-button{background:linear-gradient(135deg,var(--accent),#38bdf8);color:#05202a;border:0;border-radius:10px;padding:11px 18px;font-weight:700;cursor:pointer;font:inherit;font-weight:700;white-space:nowrap}
-button.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
-button:disabled{opacity:.5;cursor:wait}
-.status{margin-top:12px;color:var(--muted);font-size:14px;min-height:22px}
-.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--muted);border-top-color:var(--accent);border-radius:50%;animation:s 0.8s linear infinite;vertical-align:-2px;margin-right:8px}
-@keyframes s{to{transform:rotate(360deg)}}
-.tabs{display:flex;gap:6px;margin:22px 0 14px;flex-wrap:wrap}
-.tab{padding:9px 16px;border-radius:999px;border:1px solid var(--line);color:var(--muted);cursor:pointer;user-select:none}
-.tab.on{background:var(--panel2);color:var(--text);border-color:var(--accent2)}
+html,body{margin:0}
+body{background:var(--bg);color:var(--white);font:15px/1.55 "Cascadia Mono",Consolas,"Courier New","Nirmala UI","Noto Sans Devanagari",monospace;min-height:100vh;overflow-x:hidden}
+#stars{position:fixed;inset:0;width:100%;height:100%;z-index:0;image-rendering:pixelated}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:50;
+background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);mix-blend-mode:multiply}
+canvas{image-rendering:pixelated;image-rendering:crisp-edges}
+.wrap{position:relative;z-index:1;max-width:1420px;margin:0 auto;padding:18px 26px 70px}
+.pbox{background:var(--navy);margin:6px;padding:16px 18px;position:relative;
+box-shadow:0 -4px 0 0 var(--k),0 4px 0 0 var(--k),-4px 0 0 0 var(--k),4px 0 0 0 var(--k),
+inset 0 4px 0 0 rgba(255,255,255,.07),inset 0 -4px 0 0 rgba(0,0,0,.25),10px 10px 0 0 rgba(0,0,0,.35)}
+.dark{background:#0d1328}
+header{display:flex;align-items:center;gap:18px}
+#mascot{width:70px;height:70px}
+.sub{color:var(--lav);font-size:13px;margin-top:6px}
+.ticker{flex:1;overflow:hidden;white-space:nowrap;color:var(--yellow);font-size:13px;margin-left:10px}
+.ticker span{display:inline-block;padding-left:100%;animation:tick 28s linear infinite}
+@keyframes tick{to{transform:translateX(-100%)}}
+#scene{width:100%;display:block;background:#0d1328}
+.scenebar{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:14px;flex-wrap:wrap}
+.controls{display:grid;grid-template-columns:1fr 250px auto auto;gap:14px;align-items:end;margin-top:14px}
+label{display:block;font-size:11.5px;color:var(--lav);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}
+input[type=text],textarea,select{width:100%;background:var(--k);color:var(--white);border:0;padding:11px 12px;font:inherit;
+box-shadow:0 0 0 3px var(--navy2),inset 3px 3px 0 0 rgba(0,0,0,.5);outline:none}
+input:focus,textarea:focus,select:focus{box-shadow:0 0 0 3px var(--blue),inset 3px 3px 0 0 rgba(0,0,0,.5)}
+textarea{min-height:200px;font-size:13.5px;resize:vertical}
+.btn{font:inherit;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--k);background:var(--green);border:0;padding:11px 18px;cursor:pointer;white-space:nowrap;
+box-shadow:inset -4px -4px 0 0 rgba(0,0,0,.35),inset 4px 4px 0 0 rgba(255,255,255,.35),0 0 0 4px var(--k)}
+.btn:hover{filter:brightness(1.1)}
+.btn:active{transform:translate(2px,2px);box-shadow:inset 4px 4px 0 0 rgba(0,0,0,.35),0 0 0 4px var(--k)}
+.btn.b{background:var(--blue)} .btn.y{background:var(--yellow)} .btn.p{background:var(--pink)}
+.btn:disabled{filter:grayscale(.8);cursor:wait}
+.status{margin-top:14px;color:var(--lgray);font-size:13.5px;min-height:20px}
+.blink{animation:bl 1s steps(2) infinite}@keyframes bl{50%{opacity:0}}
+.tabs{display:flex;gap:16px;margin:26px 6px 14px;flex-wrap:wrap}
+.tab{font-weight:700;text-transform:uppercase;letter-spacing:1px;font-size:13px;padding:9px 14px;cursor:pointer;user-select:none;color:var(--lgray);background:var(--navy2);
+box-shadow:inset -3px -3px 0 0 rgba(0,0,0,.35),inset 3px 3px 0 0 rgba(255,255,255,.15),0 0 0 4px var(--k)}
+.tab.on{background:var(--yellow);color:var(--k)}
+.tab:active{transform:translate(2px,2px)}
 .hidden{display:none!important}
-.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
-.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
-.stat b{display:block;font-size:28px;letter-spacing:.3px}
-.stat span{color:var(--muted);font-size:12.5px}
-.stat.g b{color:var(--green)} .stat.a b{color:var(--accent)} .stat.v b{color:var(--accent2)} .stat.y b{color:var(--amber)}
-.two{display:grid;grid-template-columns:1.2fr 1fr;gap:14px;margin-top:14px}
-.bar{display:grid;grid-template-columns:150px 1fr 60px;gap:10px;align-items:center;margin:6px 0;font-size:13.5px}
-.bar i{display:block;height:10px;border-radius:6px;background:linear-gradient(90deg,var(--accent2),var(--accent))}
-.bar em{font-style:normal;color:var(--muted);text-align:right}
-h3{margin:0 0 10px;font-size:15px}
-.chips span{display:inline-block;margin:4px 6px 0 0;padding:4px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:12.5px;color:var(--muted)}
-.files{display:grid;grid-template-columns:330px 1fr;gap:14px}
-.flist{max-height:72vh;overflow:auto;padding:6px}
-.fi{padding:8px 10px;border-radius:10px;cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center;word-break:break-all}
-.fi:hover{background:var(--panel2)} .fi.on{background:var(--panel2);outline:1px solid var(--accent2)}
-.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--green)}
-.dot.q{background:var(--red)} .dot.r{background:var(--amber)}
-.diff{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-pre{margin:0;white-space:pre-wrap;word-break:break-word;font:12.8px/1.55 ui-monospace,Consolas,"Noto Sans Mono","Noto Sans Devanagari",monospace;
-background:#0a1128;border:1px solid var(--line);border-radius:12px;padding:14px;max-height:68vh;overflow:auto}
-pre .o{background:var(--redbg);color:#ffd5dc;border-radius:4px;text-decoration:line-through;text-decoration-color:rgba(251,113,133,.6)}
-pre .n{background:var(--greenbg);color:#c9ffe9;border-radius:4px}
-.ph{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px;color:var(--muted)}
-.ph b{color:var(--text)}
-.badge{font-size:11.5px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
-.badge.Devanagari{color:#fbcfe8;border-color:#9d174d} .badge.Hinglish{color:#fde68a;border-color:#92400e} .badge.English{color:#bfdbfe;border-color:#1e40af}
-.cl{margin-bottom:12px}
-.clh{display:flex;gap:10px;align-items:center;cursor:pointer}
-.psn{font-family:ui-monospace,Consolas,monospace;font-weight:700;color:var(--accent);font-size:15px}
-.rec{display:grid;grid-template-columns:240px 1fr 1fr;gap:10px;font-size:12.5px;border-top:1px dashed var(--line);padding:8px 0}
-.rec .f{color:var(--muted);word-break:break-all}
-.rec .o{color:#ffd5dc} .rec .s{color:#c9ffe9}
-.proof{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:14px}
-.note{color:var(--muted);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+.stat{display:flex;flex-direction:column;gap:10px;min-height:118px}
+.stat .lbl{color:var(--lgray);font-size:12.5px}
+.stat .row{display:flex;align-items:center;gap:10px}
+.two{display:grid;grid-template-columns:1.15fr 1fr;gap:10px;margin-top:8px}
+h3{margin:0 0 12px;font-size:14px;text-transform:uppercase;letter-spacing:1.5px;color:var(--yellow)}
+.bar{display:grid;grid-template-columns:150px 1fr 64px;gap:12px;align-items:center;margin:7px 0;font-size:13px}
+.track{height:14px;background:var(--k);box-shadow:0 0 0 2px var(--navy2)}
+.fill{height:100%;width:0;transition:width 1.1s steps(18);background:repeating-linear-gradient(90deg,var(--c,var(--green)) 0 10px,transparent 10px 12px)}
+.bar em{font-style:normal;color:var(--lgray);text-align:right}
 table{width:100%;border-collapse:collapse;font-size:13px}
-td,th{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-th{color:var(--muted);font-weight:600}
-.empty{padding:50px;text-align:center;color:var(--muted)}
-@media (max-width:1000px){.grid{grid-template-columns:repeat(3,1fr)}.files,.two,.diff{grid-template-columns:1fr}.run{grid-template-columns:1fr}}
+td,th{padding:7px 6px;border-bottom:2px dashed var(--navy2);text-align:left;vertical-align:top}
+th{color:var(--lav);font-weight:400}
+.chips span{display:inline-block;margin:5px 8px 0 0;padding:3px 9px;background:var(--navy2);font-size:12px;box-shadow:0 0 0 2px var(--k)}
+.files{display:grid;grid-template-columns:340px 1fr;gap:10px}
+.flist{max-height:72vh;overflow:auto}
+.fi{padding:7px 8px;cursor:pointer;font-size:12.5px;display:flex;gap:8px;align-items:flex-start;word-break:break-all}
+.fi:hover{background:var(--navy2)} .fi.on{background:var(--k);box-shadow:inset 4px 0 0 0 var(--yellow)}
+.sq{width:10px;height:10px;flex:none;margin-top:4px;background:var(--green);box-shadow:0 0 0 2px var(--k)}
+.sq.q{background:var(--red)} .sq.r{background:var(--orange)}
+.diff{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+pre{margin:0;white-space:pre-wrap;word-break:break-word;font:12.6px/1.6 "Cascadia Mono",Consolas,"Nirmala UI","Noto Sans Devanagari",monospace;max-height:66vh;overflow:auto}
+.o{background:rgba(255,0,77,.28);color:#ffc2d1;text-decoration:line-through;text-decoration-color:rgba(255,0,77,.8)}
+.n{background:rgba(0,228,54,.2);color:#b8ffc8}
+.zap{animation:zap .9s steps(6) both}
+@keyframes zap{0%{background:var(--white);color:var(--k)}35%{background:var(--red);color:var(--white)}100%{background:rgba(0,228,54,.2);color:#b8ffc8}}
+.ph{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:12.5px;color:var(--lgray);gap:10px}
+.ph b{color:var(--yellow);text-transform:uppercase;letter-spacing:1px}
+.tag{font-size:11px;padding:2px 7px;color:var(--k);font-weight:700;box-shadow:0 0 0 2px var(--k);white-space:nowrap}
+.tag.Devanagari{background:var(--pink)} .tag.Hinglish{background:var(--orange)} .tag.English{background:var(--blue)} .tag.ren{background:var(--orange)}
+.cl{margin-bottom:12px}
+.clh{display:flex;gap:12px;align-items:center;cursor:pointer;flex-wrap:wrap}
+.psn{font-weight:700;color:var(--yellow);font-size:15px;letter-spacing:1px}
+.rec{display:grid;grid-template-columns:230px 1fr 1fr;gap:12px;font-size:12.3px;border-top:2px dashed var(--navy2);padding:8px 0;margin-top:6px}
+.rec .f{color:var(--lav);word-break:break-all}
+.rec .ro{color:#ffc2d1} .rec .rs{color:#b8ffc8}
+.proof{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}
+.vs{display:flex;align-items:center;justify-content:center;gap:26px;margin-top:6px;flex-wrap:wrap}
+.vault{text-align:center}
+.note{color:var(--lgray);font-size:13px}
+.empty{padding:46px;text-align:center;color:var(--lav)}
+code{color:var(--peach)}
+::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-track{background:var(--k)}::-webkit-scrollbar-thumb{background:var(--navy2);border:2px solid var(--k)}
+@media (max-width:1050px){.grid{grid-template-columns:repeat(3,1fr)}.files,.two,.diff,.controls{grid-template-columns:1fr}.proof{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
-<header>
-  <div class="logo">R</div>
-  <div><h1>RAKSHA · privacy firewall</h1><div class="tag">Team Poker Face · Track 3 Secret Wards · offline, CPU-only, no LLMs</div></div>
-  <div class="pill" id="runinfo">no run yet</div>
-</header>
-<main>
-  <section class="card">
-    <div class="run">
-      <div><label>Input folder (hospital export dump)</label><input id="inp" type="text" placeholder="C:\path\to\dev\input"></div>
-      <div><label title="Use a long random value: the firewall refuses to release any file that contains its own secret">RAKSHA_SECRET (long, random)</label><input id="sec" type="text" value="stage-demo-secret"></div>
-      <button id="go">Sanitise folder</button>
-      <button class="ghost" id="up">Upload folder…</button>
+<canvas id="stars"></canvas>
+<div class="wrap">
+  <header class="pbox">
+    <canvas id="mascot" width="14" height="14"></canvas>
+    <div>
+      <canvas class="ptxt" data-t="RAKSHA" data-s="5" data-c="#ffec27"></canvas>
+      <div class="sub">pixel privacy firewall · Team Poker Face · Track 3 Secret Wards · offline · CPU only · no LLMs</div>
+    </div>
+    <div class="ticker"><span id="tick">★ English · हिन्दी · Hinglish ★ names, IDs and addresses removed · doses, vitals, labs and doctors kept ★ one keyed pseudonym per patient across files and scripts ★ per-patient date shifts keep every stay exact ★ unsafe files quarantined, never copied ★</span></div>
+  </header>
+
+  <section class="pbox dark" style="margin-top:18px">
+    <div class="scenebar">
+      <canvas class="ptxt" id="sceneState" data-t="SYSTEM IDLE" data-s="2" data-c="#29adff"></canvas>
+      <span class="note">files flow through the same pipeline the judges run</span>
+    </div>
+    <canvas id="scene"></canvas>
+    <div class="controls">
+      <div><label>Input folder (hospital export dump)</label><input id="inp" type="text" placeholder="C:\path\to\input"></div>
+      <div><label title="Use a long random value: the firewall refuses to release any file containing its own secret">RAKSHA_SECRET (long, random)</label><input id="sec" type="text" value="stage-demo-secret"></div>
+      <button class="btn" id="go">▶ Sanitise</button>
+      <button class="btn b" id="up">Upload folder</button>
       <input id="dir" type="file" webkitdirectory multiple class="hidden">
     </div>
-    <div class="status" id="st">Pick a folder and press <b>Sanitise folder</b>. The pipeline runs exactly as the judges run it: <code>python main.py --input … --output …</code></div>
+    <div class="status" id="st">Press <b>▶ Sanitise</b>. It runs exactly what the judges run: <code>python main.py --input … --output …</code></div>
   </section>
 
   <div class="tabs" id="tabs">
-    <div class="tab on" data-t="ov">Overview</div>
-    <div class="tab" data-t="fl">Files: before / after</div>
+    <div class="tab on" data-t="ov">★ Overview</div>
+    <div class="tab" data-t="fl">Before / After</div>
     <div class="tab" data-t="pt">Linked patients</div>
     <div class="tab" data-t="tr">Try it live</div>
     <div class="tab" data-t="pr">Privacy proof</div>
   </div>
 
-  <section id="ov"><div class="empty">Run the firewall to see the summary.</div></section>
-
-  <section id="fl" class="hidden"><div class="empty">Run the firewall first.</div></section>
-
-  <section id="pt" class="hidden"><div class="empty">Run the firewall first.</div></section>
+  <section id="ov"><div class="pbox empty">Insert coin… then press ▶ SANITISE.</div></section>
+  <section id="fl" class="hidden"><div class="pbox empty">Run the firewall first.</div></section>
+  <section id="pt" class="hidden"><div class="pbox empty">Run the firewall first.</div></section>
 
   <section id="tr" class="hidden">
-    <div class="card">
-      <div style="display:grid;grid-template-columns:1fr 160px auto;gap:12px;align-items:end">
-        <div><label>Paste any note, CSV or JSON (English, हिन्दी, Hinglish)</label></div>
+    <div class="pbox">
+      <div style="display:grid;grid-template-columns:1fr 170px auto;gap:14px;align-items:end">
+        <div><h3>Paste any note, CSV or JSON</h3><div class="note">English, हिन्दी or Hinglish. A single pasted note has no hospital-dump context, so its age widens to the safest band.</div></div>
         <div><label>Type</label><select id="kind"><option value="note">Text note</option><option value="csv">CSV</option><option value="json">JSON</option></select></div>
-        <button id="trygo">Sanitise text</button>
+        <button class="btn y" id="trygo">⚡ Zap PII</button>
       </div>
-      <textarea id="txt">DISCHARGE SUMMARY - City Hospital, Ward 7 (Surgery), Bed 12
+      <textarea id="txt" style="margin-top:14px">DISCHARGE SUMMARY - City Hospital, Ward 7 (Surgery), Bed 12
 Patient: Mohammad Arif (52/M), S/o Rahim Khan, UHID: CH/26/084511
 Ph: +91 98765 43210, Aadhaar 4567 8912 3456, H.No. 18, Mohalla Qazipura, village Bithauli, PIN 261001
 Admitted 03/03/2026, discharged 12/03/2026 (9 days). C/O fever x 3 days, K/C/O DM, H/O Koch's 2019.
@@ -120,26 +149,165 @@ Arif sahab ka BP 150/90 tha, unke bete Imran ne bataya ki dawai nahi li. Referre
 मरीज़: मोहम्मद आरिफ, पिता: रहीम खान, मोबाइल ९८७६५४३२१०, भर्ती 3 मार्च 2026</textarea>
       <div class="status" id="trst"></div>
     </div>
-    <div class="diff" id="trout" style="margin-top:14px"></div>
+    <div class="diff" id="trout" style="margin-top:8px"></div>
   </section>
 
   <section id="pr" class="hidden">
-    <div class="card">
-      <h3>Same input, a different secret: can anyone link the two releases?</h3>
-      <p class="note">Re-runs the same folder with a new <code>RAKSHA_SECRET</code>. Pseudonyms and date shifts are keyed HMACs, so a new secret
-      must give completely different pseudonyms while the <i>linkage itself</i> (which records belong together) stays the same.</p>
-      <button id="rot">Run again with a new secret</button>
+    <div class="pbox">
+      <h3>Two releases, two secrets: can anyone link them?</h3>
+      <p class="note">Re-runs the same folder with a fresh <code>RAKSHA_SECRET</code>. Pseudonyms and date shifts are keyed HMACs, so every
+      pseudonym must change, while the <i>grouping</i> (which records belong to one patient) stays identical.</p>
+      <button class="btn p" id="rot">↻ Re-release with a new secret</button>
       <div class="status" id="rotst"></div>
+      <div id="vs"></div>
       <div class="proof" id="proof"></div>
     </div>
   </section>
-</main>
+</div>
 <script>
+"use strict";
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let JOB = null, FILES = [], CUR = -1;
+const num = n => (n ?? 0).toLocaleString("en-IN");
+
+/* ---------------- 5x7 bitmap pixel font (each glyph row is one base-32 digit) ---------------- */
+const B32 = "0123456789ABCDEFGHIJKLMNOPQRSTUV";
+const GL = {A:"EHHVHHH",B:"UHHUHHU",C:"EHGGGHE",D:"UHHHHHU",E:"VGGUGGV",F:"VGGUGGG",G:"EHGNHHF",H:"HHHVHHH",I:"E44444E",J:"72222IC",
+K:"HIKOKIH",L:"GGGGGGV",M:"HRLLHHH",N:"HHPLJHH",O:"EHHHHHE",P:"UHHUGGG",Q:"EHHHLID",R:"UHHUKIH",S:"FGGE11U",T:"V444444",U:"HHHHHHE",
+V:"HHHHHA4",W:"HHHLLLA",X:"HHA4AHH",Y:"HHA4444",Z:"V1248GV","0":"EHJLPHE","1":"4C4444E","2":"EH1248V","3":"V2421HE","4":"26AIV22",
+"5":"VGU11HE","6":"68GUHHE","7":"V124888","8":"EHHEHHE","9":"EHHF12C"," ":"0000000",".":"00000CC",":":"0CC0CC0","-":"000V000",
+"/":"122488G","%":"PQ248BJ","+":"044V440",",":"0000C48","!":"4444404","?":"EH12404","'":"4480000","·":"000CC00","(":"2488842",
+")":"8422248",">":"8421248","<":"248G842","#":"AAVAVAA","_":"000000V","*":"04LEL40","=":"00V0V00"};
+function pxWidth(t, s) { return Math.max(1, t.length * 6 * s - s); }
+function pxText(ctx, t, x, y, s, color) {
+  ctx.fillStyle = color;
+  for (const ch of t.toUpperCase()) {
+    const g = GL[ch] || GL["?"];
+    for (let r = 0; r < 7; r++) { const v = B32.indexOf(g[r]); for (let c = 0; c < 5; c++) if (v & (16 >> c)) ctx.fillRect(x + c * s, y + r * s, s, s); }
+    x += 6 * s;
+  }
+}
+function setPx(cv, t, s, color) {
+  s = s || +cv.dataset.s || 2; color = color || cv.dataset.c || "#fff1e8";
+  cv.width = pxWidth(t, s); cv.height = 7 * s;
+  const ctx = cv.getContext("2d"); ctx.clearRect(0, 0, cv.width, cv.height); pxText(ctx, t, 0, 0, s, color);
+}
+document.querySelectorAll("canvas.ptxt").forEach(c => setPx(c, c.dataset.t));
+function countUp(cv, target, s, color) {
+  const t0 = performance.now(), dur = 1100;
+  const step = now => {
+    const k = Math.min(1, (now - t0) / dur), v = Math.round(target * (1 - Math.pow(1 - k, 3)));
+    setPx(cv, num(v), s, color);
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+/* ---------------- sprites ---------------- */
+const PAL = {k:"#0b0f1e",h:"#c2c3c7",v:"#1d2b53",e:"#29adff",b:"#00e436",g:"#ffec27",w:"#fff1e8",p:"#ff004d",S:"#29adff",s:"#ffccaa",c:"#83769c",r:"#ff004d",o:"#ffa300"};
+const ROBOT = ["......gg......","......kk......","...kkkkkkkk...","..khhhhhhhhk..","..khvvvvvvhk..","..khvevvevhk..","..khvvvvvvhk..",
+"..khhhhhhhhk..","...kkkkkkkk...","..kbbbbbbbbk..",".kbbgbbbbgbbk.",".kbbbbbbbbbbk.","..kbbk..kbbk..","..kkkk..kkkk.."];
+const SHIELD = ["kkkkkkkkkkkk","kSSSSggSSSSk","kSSSSggSSSSk","kSggggggggSk","kSggggggggSk","kSSSSggSSSSk","kSSSSggSSSSk",".kSSSggSSSk.",
+".kSSSggSSSk.","..kSSggSSk..","...kSSSSk...","....kkkk...."];
+const FILE = ["kkkkkk...","kwwwwkk..","kwwwwkwk.","kwwwwkkkk","kwppppwwk","kwwwwwwwk","kwpppppwk","kwwwwwwwk","kwpppwwwk","kwwwwwwwk","kkkkkkkkk"];
+const PERSON = ["..kkkkk..",".ksssssk.",".ksksksk.",".ksssssk.","..kkkkk..",".kccccck.","kccccccck","kccccccck",".kccccck.",".kk...kk."];
+const HOSP = ["....kkkk....","....krrk....","..kkkrrkkk..","..kwwwwwwk..","kkkwwrrwwkkk","kwwwwrrwwwwk","kwkwwwwwwkwk","kwkwkkkkwkwk","kwwwkwwkwwwk","kkkkkkkkkkkk"];
+const LOCK = [".kkkk.","k....k","k....k","kkkkkk","kggggk","kgkkgk","kggggk","kkkkkk"];
+function sprite(ctx, rows, x, y, s, pal) {
+  rows.forEach((row, r) => { for (let c = 0; c < row.length; c++) { const ch = row[c]; if (ch === ".") continue;
+    ctx.fillStyle = (pal && pal[ch]) || PAL[ch] || "#fff1e8"; ctx.fillRect(x + c * s, y + r * s, s, s); } });
+}
+function spriteCanvas(rows, s, pal) {
+  const cv = document.createElement("canvas"); cv.width = rows[0].length * s; cv.height = rows.length * s;
+  sprite(cv.getContext("2d"), rows, 0, 0, s, pal); return cv;
+}
+const PCOL = ["#29adff","#ff77a8","#00e436","#ffa300","#83769c","#ffec27","#ff004d","#ffccaa"];
+const hashCol = s => { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return PCOL[h % PCOL.length]; };
+
+/* ---------------- starfield ---------------- */
+(() => {
+  const cv = $("#stars"), ctx = cv.getContext("2d"); let stars = [];
+  const fit = () => { cv.width = Math.ceil(innerWidth / 4); cv.height = Math.ceil(innerHeight / 4);
+    stars = Array.from({length: 90}, () => ({x: Math.random() * cv.width | 0, y: Math.random() * cv.height | 0, p: Math.random() * 6, c: Math.random() < .2 ? "#29adff" : "#c2c3c7"})); };
+  fit(); addEventListener("resize", fit);
+  setInterval(() => { ctx.clearRect(0, 0, cv.width, cv.height);
+    for (const s of stars) { s.p += .15; const a = (Math.sin(s.p) + 1) / 2; if (a > .35) { ctx.globalAlpha = a * .7; ctx.fillStyle = s.c; ctx.fillRect(s.x, s.y, 1, 1); } }
+    ctx.globalAlpha = 1; }, 100);
+})();
+
+/* ---------------- mascot ---------------- */
+let MOOD = "idle";
+(() => {
+  const cv = $("#mascot"), ctx = cv.getContext("2d"); let t = 0;
+  setInterval(() => { t++; ctx.clearRect(0, 0, 14, 14);
+    const rows = ROBOT.slice();
+    const blink = t % 28 === 0 || t % 28 === 1;
+    if (MOOD === "happy") rows[5] = "..khvgvvgvhk..";
+    else if (MOOD === "work") rows[5] = (t % 4 < 2) ? "..khevvvvehk.." : "..khvvevvvhk..";
+    else if (blink) rows[5] = "..khvvvvvvhk..";
+    const bob = MOOD === "happy" ? (t % 4 < 2 ? -1 : 0) : (t % 10 < 5 ? 0 : 1);
+    ctx.save(); ctx.translate(0, bob); sprite(ctx, rows, 0, 0, 1); ctx.restore(); }, 120);
+})();
+
+/* ---------------- pipeline scene ---------------- */
+const SC = $("#scene"), sx = SC.getContext("2d"), W = 400, H = 92;
+SC.width = W; SC.height = H; SC.style.aspectRatio = W + " / " + H;
+const STAGES = [["INGEST", 58, "#29adff"], ["DETECT", 114, "#ff004d"], ["LINK", 170, "#83769c"], ["PRIVACY", 226, "#ffa300"], ["GATE", 282, "#00e436"]];
+let MODE = "idle", parts = [], sparks = [], confetti = [], tickN = 0, lastSpawn = 0, released = 0;
+function scene() {
+  tickN++;
+  const rate = MODE === "run" ? 9 : MODE === "done" ? 1e9 : 55;
+  if (tickN - lastSpawn > rate) { parts.push({x: 20, y: 54, st: "raw", q: Math.random() < .07, fall: false}); lastSpawn = tickN; }
+  sx.fillStyle = "#0d1328"; sx.fillRect(0, 0, W, H);
+  sx.fillStyle = "#1d2b53"; sx.fillRect(0, 66, W, 26);
+  sx.fillStyle = "#29366f"; sx.fillRect(0, 66, W, 3);
+  const off = MODE === "run" ? (tickN * 2) % 10 : (tickN >> 1) % 10;
+  sx.fillStyle = "#5f574f"; for (let x = -10 + off; x < 340; x += 10) sx.fillRect(x, 70, 5, 2);
+  sprite(sx, HOSP, 2, 42, 2);
+  for (const [name, x, col] of STAGES) {
+    const busy = parts.some(p => p.x > x - 4 && p.x < x + 44 && !p.fall);
+    sx.fillStyle = "#0b0f1e"; sx.fillRect(x - 1, 9, 50, 46);
+    sx.fillStyle = busy ? "#29366f" : "#1d2b53"; sx.fillRect(x, 10, 48, 44);
+    sx.fillStyle = col; sx.fillRect(x, 10, 48, 3);
+    pxText(sx, name, x + Math.round((48 - pxWidth(name, 1)) / 2), 17, 1, "#fff1e8");
+    for (let i = 0; i < 3; i++) { sx.fillStyle = busy && ((tickN >> 2) + i) % 3 === 0 ? col : "#0b0f1e"; sx.fillRect(x + 14 + i * 7, 30, 4, 4); }
+    sx.fillStyle = "#0b0f1e"; sx.fillRect(x + 6, 40, 36, 12);
+  }
+  sx.fillStyle = "#0b0f1e"; sx.fillRect(339, 33, 58, 36); sx.fillStyle = "#008751"; sx.fillRect(340, 34, 56, 34);
+  pxText(sx, "RELEASE", 348, 38, 1, "#fff1e8"); pxText(sx, String(released % 1000), 350, 52, 2, "#ffec27");
+  sx.fillStyle = "#7e2553"; sx.fillRect(296, 76, 30, 16); sprite(sx, LOCK, 305, 79, 2);
+  const sp = MODE === "run" ? 2.2 : .9;
+  for (const p of parts) {
+    if (p.fall) p.y += 2; else p.x += sp;
+    if (p.st === "raw" && p.x > 128) { p.st = "clean";
+      for (let i = 0; i < 6; i++) sparks.push({x: p.x + 4, y: p.y + 4, vx: (Math.random() - .5) * 2.4, vy: -Math.random() * 2.6 - .5, l: 18, c: i % 2 ? "#ff004d" : "#ffec27"}); }
+    if (p.q && !p.fall && p.x > 303) { p.fall = true; p.st = "quar"; }
+    const pal = p.st === "raw" ? {p: "#ff004d"} : p.st === "clean" ? {p: "#00e436"} : {p: "#ff004d", w: "#ff77a8"};
+    const inside = !p.fall && STAGES.some(([, x]) => p.x > x + 4 && p.x < x + 38);
+    if (!inside) sprite(sx, FILE, Math.round(p.x), Math.round(p.y), 1, pal);
+  }
+  parts = parts.filter(p => { if (p.fall && p.y > 80) return false; if (p.x > 345) { released++; return false; } return true; });
+  for (const s of sparks) { s.x += s.vx; s.y += s.vy; s.vy += .12; s.l--; sx.fillStyle = s.c; sx.fillRect(Math.round(s.x), Math.round(s.y), 1, 1); }
+  sparks = sparks.filter(s => s.l > 0);
+  for (const c of confetti) { c.x += c.vx; c.y += c.vy; c.vy += .05; c.l--; sx.fillStyle = c.c; sx.fillRect(Math.round(c.x), Math.round(c.y), 2, 2); }
+  confetti = confetti.filter(c => c.l > 0 && c.y < H);
+  sprite(sx, SHIELD, 360, 8, 1);
+  requestAnimationFrame(scene);
+}
+requestAnimationFrame(scene);
+function setMode(m, label, color) {
+  MODE = m; MOOD = m === "run" ? "work" : m === "done" ? "happy" : "idle";
+  setPx($("#sceneState"), label, 2, color);
+  if (m === "done") {
+    for (let i = 0; i < 120; i++) confetti.push({x: 200 + (Math.random() - .5) * 120, y: 40, vx: (Math.random() - .5) * 5, vy: -Math.random() * 3.5, l: 90, c: PCOL[i % PCOL.length]});
+    setTimeout(() => { if (MODE === "done") { MODE = "idle"; MOOD = "idle"; } }, 6000);
+  }
+}
+
+/* ---------------- API ---------------- */
+let JOB = null;
 const api = async (url, body) => {
-  const r = await fetch(url, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {});
+  const r = await fetch(url, body ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)} : {});
   const j = await r.json(); if (j.error) throw new Error(j.error); return j;
 };
 async function wait(job, el) {
@@ -147,138 +315,168 @@ async function wait(job, el) {
     const s = await api("/api/status?job=" + job);
     if (s.state === "done") return s;
     if (s.state === "error") throw new Error(s.error);
-    el.innerHTML = `<span class="spin"></span>Sanitising… ${s.elapsed}s`;
-    await new Promise(r => setTimeout(r, 400));
+    el.innerHTML = `<span class="blink">▮</span> sanitising… ${s.elapsed}s`;
+    setPx($("#sceneState"), "SANITISING " + Number(s.elapsed).toFixed(1) + "S", 2, "#ffec27");
+    await new Promise(r => setTimeout(r, 300));
   }
 }
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === t));
-  ["ov","fl","pt","tr","pr"].forEach(id => $("#" + id).classList.toggle("hidden", id !== t.dataset.t));
+  ["ov", "fl", "pt", "tr", "pr"].forEach(id => $("#" + id).classList.toggle("hidden", id !== t.dataset.t));
   if (t.dataset.t === "pt" && JOB && !$("#pt").dataset.loaded) loadPatients();
 });
 const QS = new URLSearchParams(location.search);
-api("/api/config").then(c => { if (c.default_input) $("#inp").value = c.default_input; if (QS.get("run")) $("#go").click(); if (QS.get("job")) { JOB = QS.get("job"); loadSummary(); } });
+api("/api/config").then(c => {
+  if (c.default_input) $("#inp").value = c.default_input;
+  if (QS.get("run")) $("#go").click();
+  if (QS.get("job")) { JOB = QS.get("job"); loadSummary(); }
+});
 
 async function start(promise) {
-  $("#go").disabled = $("#up").disabled = true;
+  $("#go").disabled = $("#up").disabled = true; setMode("run", "SANITISING", "#ffec27");
   try {
     const {job} = await promise; const s = await wait(job, $("#st"));
     JOB = job; $("#pt").dataset.loaded = "";
-    $("#st").innerHTML = `✅ Done in <b>${s.seconds}s</b> · output is in a temporary folder (deleted when the UI stops)`;
+    $("#st").innerHTML = `★ Done in <b>${s.seconds}s</b>. Output lives in a temporary folder that is deleted when the UI stops.`;
+    setMode("done", "RELEASE READY!", "#00e436");
     await loadSummary();
-  } catch (e) { $("#st").innerHTML = "❌ " + esc(e.message); }
+  } catch (e) { $("#st").innerHTML = "✖ " + esc(e.message); setMode("idle", "ERROR", "#ff004d"); }
   $("#go").disabled = $("#up").disabled = false;
 }
 $("#go").onclick = () => start(api("/api/run", {input: $("#inp").value.trim(), secret: $("#sec").value}));
 $("#up").onclick = () => $("#dir").click();
 $("#dir").onchange = async ev => {
   const fs = [...ev.target.files]; if (!fs.length) return;
-  $("#st").innerHTML = `<span class="spin"></span>Reading ${fs.length} files…`;
+  $("#st").innerHTML = `<span class="blink">▮</span> reading ${fs.length} files…`;
   const files = await Promise.all(fs.map(f => new Promise(res => {
-    const r = new FileReader(); r.onload = () => res({path: f.webkitRelativePath.split("/").slice(1).join("/") || f.name, b64: r.result.split(",")[1] || ""});
+    const r = new FileReader();
+    r.onload = () => res({path: f.webkitRelativePath.split("/").slice(1).join("/") || f.name, b64: String(r.result).split(",")[1] || ""});
     r.readAsDataURL(f);
   })));
   start(api("/api/upload", {files, secret: $("#sec").value, label: fs[0].webkitRelativePath.split("/")[0]}));
 };
 
-const num = n => (n ?? 0).toLocaleString("en-IN");
+/* ---------------- overview ---------------- */
+const ECOL = {PATIENT_NAME: "#ff004d", RELATIVE_NAME: "#ff77a8", MRN: "#29adff", PHONE: "#ffa300", AADHAAR: "#ffec27", ABHA: "#83769c",
+  ABHA_NUMBER: "#83769c", PAN: "#ffccaa", EMAIL: "#00e436", DOB: "#c2c3c7", VILLAGE: "#008751", HOUSE: "#ab5236", PIN: "#5f574f", LOCALITY: "#7e2553", LANDMARK: "#ffa300"};
 async function loadSummary() {
-  const s = await api("/api/summary?job=" + JOB); FILES = s.files;
-  const c = s.counts;
-  $("#runinfo").textContent = `${s.label} · ${s.seconds}s · ${num(s.resources.peak_rss_mb)} MB`;
-  const ents = Object.entries(s.entities).sort((a,b) => b[1]-a[1]); const mx = ents.length ? ents[0][1] : 1;
+  const s = await api("/api/summary?job=" + JOB); const c = s.counts;
+  $("#tick").textContent = `★ ${s.label}: ${num(c.files_total)} files in · ${num(c.files_sanitized)} released · ${num(c.files_quarantined)} quarantined · ${num(c.identifiers_detected)} identifiers removed · ${num(s.patients)} patients with stable pseudonyms · ${s.timing.seconds}s · ${num(s.resources.peak_rss_mb)} MB peak ★ doses, vitals, labs and doctors kept ★`;
+  const ents = Object.entries(s.entities).sort((a, b) => b[1] - a[1]); const mx = ents.length ? ents[0][1] : 1;
   const q = s.files.filter(f => f.status !== "sanitized");
-  $("#ov").innerHTML = `
-  <div class="grid">
-    <div class="stat a"><b>${num(c.files_total)}</b><span>files received</span></div>
-    <div class="stat g"><b>${num(c.files_sanitized)}</b><span>files sanitised</span></div>
-    <div class="stat y"><b>${num(c.files_quarantined)}</b><span>quarantined (never copied out)</span></div>
-    <div class="stat v"><b>${num(c.identifiers_detected)}</b><span>personal identifiers removed</span></div>
-    <div class="stat a"><b>${num(s.patients)}</b><span>patients (stable pseudonyms)</span></div>
-    <div class="stat g"><b>${num(s.linked)}/${num(s.records)}</b><span>records linked to a patient</span></div>
-  </div>
+  const cards = [
+    [c.files_total, "files received", "#29adff", FILE, {p: "#ff004d"}],
+    [c.files_sanitized, "files released", "#00e436", FILE, {p: "#00e436"}],
+    [c.files_quarantined, "quarantined, never copied", "#ff004d", LOCK, null],
+    [c.identifiers_detected, "identifiers zapped", "#ffec27", SHIELD, null],
+    [s.patients, "patients, one pseudonym each", "#ff77a8", PERSON, {c: "#ff77a8"}],
+    [s.linked, `of ${num(s.records)} records linked`, "#ffa300", PERSON, {c: "#ffa300"}],
+  ];
+  $("#ov").innerHTML = `<div class="grid">${cards.map((k, i) => `<div class="pbox stat"><div class="row"><span id="ic${i}"></span>
+    <canvas id="cn${i}"></canvas></div><div class="lbl">${k[1]}</div></div>`).join("")}</div>
   <div class="two">
-    <div class="card"><h3>What was found and removed</h3>${ents.map(([k,v]) =>
-      `<div class="bar"><span>${esc(k)}</span><i style="width:${Math.max(2, 100*v/mx)}%"></i><em>${num(v)}</em></div>`).join("") || '<p class="note">none</p>'}</div>
-    <div class="card"><h3>Release report</h3>
+    <div class="pbox"><h3>What the guard zapped</h3>${ents.map(([k, v]) =>
+      `<div class="bar"><span>${esc(k)}</span><div class="track"><div class="fill" style="--c:${ECOL[k] || "#00e436"}" data-w="${Math.max(3, 100 * v / mx)}"></div></div><em>${num(v)}</em></div>`).join("") || '<p class="note">none</p>'}</div>
+    <div class="pbox"><h3>Release report</h3>
       <table>
         <tr><th>Records processed</th><td>${num(c.records_processed)}</td></tr>
-        <tr><th>Records generalised (age bands, PIN, tehsil)</th><td>${num(c.records_generalized)}</td></tr>
+        <tr><th>Records generalised (age band / PIN / tehsil)</th><td>${num(c.records_generalized)}</td></tr>
         <tr><th>Records suppressed</th><td>${num(c.records_suppressed)}</td></tr>
-        <tr><th>File names renamed (they contained PII)</th><td>${num(s.renamed)}</td></tr>
-        <tr><th>Run time / peak memory</th><td>${s.timing.seconds}s / ${num(s.resources.peak_rss_mb)} MB</td></tr>
+        <tr><th>File names renamed (they held PII)</th><td>${num(s.renamed)}</td></tr>
+        <tr><th>Run time · peak memory</th><td>${s.timing.seconds}s · ${num(s.resources.peak_rss_mb)} MB</td></tr>
       </table>
-      <h3 style="margin-top:14px">Input by folder</h3>
-      <div class="chips">${Object.entries(s.by_dir).map(([k,v]) => `<span>${esc(k)} · ${v}</span>`).join("")}</div>
-      ${q.length ? `<h3 style="margin-top:14px">Quarantined safely</h3><table>${q.map(f =>
+      <h3 style="margin-top:16px">Input by folder</h3>
+      <div class="chips">${Object.entries(s.by_dir).map(([k, v]) => `<span>${esc(k)} · ${v}</span>`).join("")}</div>
+      ${q.length ? `<h3 style="margin-top:16px">Quarantined safely</h3><table>${q.map(f =>
         `<tr><td>${esc(f.input)}</td><td class="note">${esc(f.reason || f.status)}</td></tr>`).join("")}</table>` : ""}
     </div>
   </div>`;
-  $("#fl").innerHTML = `<div class="files"><div class="card flist" id="flist">${s.files.map((f,i) =>
-    `<div class="fi" data-i="${i}"><span class="dot ${f.status!=="sanitized"?"q":f.renamed?"r":""}"></span>${esc(f.input)}</div>`).join("")}</div>
-    <div id="fview"><div class="card empty">Pick a file on the left. <span style="color:var(--green)">●</span> sanitised ·
-    <span style="color:var(--amber)">●</span> renamed (PII in file name) · <span style="color:var(--red)">●</span> quarantined</div></div></div>`;
+  cards.forEach((k, i) => { $("#ic" + i).appendChild(spriteCanvas(k[3], 3, k[4])); countUp($("#cn" + i), k[0] || 0, 4, k[2]); });
+  setTimeout(() => document.querySelectorAll(".fill").forEach(f => f.style.width = f.dataset.w + "%"), 60);
+  $("#fl").innerHTML = `<div class="files"><div class="pbox flist">${s.files.map((f, i) =>
+    `<div class="fi" data-i="${i}"><span class="sq ${f.status !== "sanitized" ? "q" : f.renamed ? "r" : ""}"></span>${esc(f.input)}</div>`).join("")}</div>
+    <div id="fview"><div class="pbox empty">Pick a file. <span style="color:var(--green)">■</span> released · <span style="color:var(--orange)">■</span> renamed (PII in the file name) ·
+    <span style="color:var(--red)">■</span> quarantined</div></div></div>`;
   document.querySelectorAll(".fi").forEach(el => el.onclick = () => showFile(+el.dataset.i));
-  const first = s.files.findIndex(f => /discharge|notes|prescription/.test(f.input) && f.status === "sanitized");
+  const first = s.files.findIndex(f => /discharge/.test(f.input) && f.status === "sanitized");
   if (first >= 0) showFile(first);
   const t = QS.get("tab"); if (t) document.querySelector(`.tab[data-t="${t}"]`)?.click();
 }
-const render = (a, cls) => a.map(([t,c]) => c ? `<span class="${cls}">${esc(t)}</span>` : esc(t)).join("");
+const render = (a, cls, zap) => { let n = 0; return a.map(([t, c]) => c ? `<span class="${cls}${zap ? " zap" : ""}"${zap ? ` style="animation-delay:${Math.min(n++ * 45, 2500)}ms"` : ""}>${esc(t)}</span>` : esc(t)).join(""); };
+
 async function showFile(i) {
-  CUR = i; document.querySelectorAll(".fi").forEach(el => el.classList.toggle("on", +el.dataset.i === i));
-  $("#fview").innerHTML = `<div class="card"><span class="spin"></span>loading…</div>`;
+  document.querySelectorAll(".fi").forEach(el => el.classList.toggle("on", +el.dataset.i === i));
+  $("#fview").innerHTML = `<div class="pbox"><span class="blink">▮</span> loading…</div>`;
   const v = await api(`/api/file?job=${JOB}&i=${i}`); const f = v.file;
   const right = f.status === "sanitized"
-    ? `<div><div class="ph"><span><b>Sanitised release</b> · ${esc(f.output.replace(/^sanitized\//,""))}${f.renamed?' <span class="badge Hinglish">renamed</span>':""}</span><span>${v.records} record(s) linked</span></div><pre>${render(v.san,"n")}</pre></div>`
-    : `<div><div class="ph"><b>Quarantined</b></div><div class="card"><p>This file was <b>not</b> released. Reason: <code>${esc(f.reason||f.status)}</code></p>
-       <p class="note">Unsupported, malformed or unsafe files are never copied into <code>sanitized/</code>; they are listed in report.json by SHA-256 only.</p></div></div>`;
-  $("#fview").innerHTML = `<div class="diff"><div><div class="ph"><b>Original input</b><span>${esc(f.input)}</span></div><pre>${render(v.orig,"o")}</pre></div>${right}</div>
+    ? `<div class="pbox"><div class="ph"><span><b>Released</b> · ${esc(f.output.replace(/^sanitized\//, ""))} ${f.renamed ? '<span class="tag ren">RENAMED</span>' : ""}</span><span>${v.records} record(s) linked</span></div><pre>${render(v.san, "n", true)}</pre></div>`
+    : `<div class="pbox"><div class="ph"><b>Quarantined</b></div><p>This file was <b>not</b> released. Reason: <code>${esc(f.reason || f.status)}</code></p>
+       <p class="note">Unsupported, malformed or unsafe files never reach <code>sanitized/</code>; report.json lists them by SHA-256 only.</p></div>`;
+  $("#fview").innerHTML = `<div class="diff"><div class="pbox"><div class="ph"><b>Original</b><span>${esc(f.input)}</span></div><pre>${render(v.orig, "o")}</pre></div>${right}</div>
     ${v.truncated ? '<p class="note">Large file: first part shown.</p>' : ""}`;
 }
+
+/* ---------------- patients ---------------- */
 async function loadPatients() {
-  $("#pt").innerHTML = `<div class="card"><span class="spin"></span>loading patients…</div>`;
+  $("#pt").innerHTML = `<div class="pbox"><span class="blink">▮</span> loading patients…</div>`;
   const p = await api("/api/patients?job=" + JOB); $("#pt").dataset.loaded = "1";
-  $("#pt").innerHTML = `<div class="card" style="margin-bottom:12px"><b>${num(p.total)}</b> patients carry a stable keyed pseudonym across files,
-    hospitals and scripts; <b>${num(p.unlinked)}</b> records were deliberately left unlinked because the evidence was too weak
-    (a wrong merge costs more than a missed link). Patients seen in several scripts are listed first. Click one to see its records.</div>` +
-    p.clusters.map((c, k) => `<div class="card cl"><div class="clh" data-k="${k}"><span class="psn">${esc(c.psn)}</span>
-      <span class="note">${c.n} records · ${c.files} files</span>${c.scripts.map(s => `<span class="badge ${s}">${s}</span>`).join("")}
-      <span class="note" style="margin-left:auto">▾</span></div><div class="recs hidden" id="rc${k}">
-      <div class="rec"><b class="note">record</b><b class="note">original</b><b class="note">released</b></div>
-      ${c.items.map(r => `<div class="rec"><div class="f">${esc(r.file)}<br>${esc(r.loc)} <span class="badge ${r.script}">${r.script}</span></div>
-        <div class="o">${esc(r.orig)}</div><div class="s">${esc(r.san)}</div></div>`).join("")}</div></div>`).join("");
+  $("#pt").innerHTML = `<div class="pbox" style="margin-bottom:14px"><b style="color:var(--yellow)">${num(p.total)}</b> patients carry one keyed pseudonym across files,
+    hospitals and scripts. <b style="color:var(--yellow)">${num(p.unlinked)}</b> records were left unlinked on purpose because the evidence was too weak
+    (a wrong merge costs more than a missed link). Patients seen in several scripts come first. Click a patient.</div>` +
+    p.clusters.map((c, k) => `<div class="pbox cl"><div class="clh" data-k="${k}"><span id="pp${k}"></span><span class="psn">${esc(c.psn)}</span>
+      <span class="note">${c.n} records · ${c.files} files</span>${c.scripts.map(s => `<span class="tag ${s}">${s}</span>`).join("")}
+      <span class="note" style="margin-left:auto">▼</span></div><div class="hidden" id="rc${k}">
+      <div class="rec"><span class="note">record</span><span class="note">original</span><span class="note">released</span></div>
+      ${c.items.map(r => `<div class="rec"><div class="f">${esc(r.file)}<br>${esc(r.loc)} <span class="tag ${r.script}">${r.script}</span></div>
+        <div class="ro">${esc(r.orig)}</div><div class="rs">${esc(r.san)}</div></div>`).join("")}</div></div>`).join("");
+  p.clusters.forEach((c, k) => $("#pp" + k).appendChild(spriteCanvas(PERSON, 3, {c: hashCol(c.psn)})));
   document.querySelectorAll(".clh").forEach(el => el.onclick = () => $("#rc" + el.dataset.k).classList.toggle("hidden"));
 }
+
+/* ---------------- try it ---------------- */
 $("#trygo").onclick = async () => {
-  $("#trygo").disabled = true; $("#trout").innerHTML = "";
+  $("#trygo").disabled = true; $("#trout").innerHTML = ""; setMode("run", "ZAPPING", "#ffec27");
   try {
     const {job} = await api("/api/try", {text: $("#txt").value, kind: $("#kind").value, secret: $("#sec").value});
     const s = await wait(job, $("#trst"));
     const sum = await api("/api/summary?job=" + job);
     const v = await api(`/api/file?job=${job}&i=0`);
-    $("#trst").innerHTML = `✅ ${s.seconds}s · ${num(sum.counts.identifiers_detected)} identifiers removed · medical values, doses, doctors and dates (shifted) kept`;
+    $("#trst").innerHTML = `★ ${s.seconds}s · <b>${num(sum.counts.identifiers_detected)}</b> identifiers zapped · doses, vitals and doctors kept, dates shifted with intervals intact`;
     $("#trout").innerHTML = v.file.status === "sanitized"
-      ? `<div><div class="ph"><b>Original</b></div><pre>${render(v.orig,"o")}</pre></div><div><div class="ph"><b>Released</b></div><pre>${render(v.san,"n")}</pre></div>`
-      : `<div class="card">Quarantined: <code>${esc(v.file.reason)}</code> (e.g. malformed JSON)</div>`;
-  } catch (e) { $("#trst").innerHTML = "❌ " + esc(e.message); }
+      ? `<div class="pbox"><div class="ph"><b>Original</b></div><pre>${render(v.orig, "o")}</pre></div><div class="pbox"><div class="ph"><b>Released</b></div><pre>${render(v.san, "n", true)}</pre></div>`
+      : `<div class="pbox">Quarantined: <code>${esc(v.file.reason)}</code> (for example malformed JSON)</div>`;
+    setMode("done", "ZAPPED!", "#00e436");
+  } catch (e) { $("#trst").innerHTML = "✖ " + esc(e.message); setMode("idle", "ERROR", "#ff004d"); }
   $("#trygo").disabled = false;
 };
+
+/* ---------------- privacy proof ---------------- */
 $("#rot").onclick = async () => {
   if (!JOB) { $("#rotst").textContent = "Run the firewall on a folder first."; return; }
-  $("#rot").disabled = true; $("#proof").innerHTML = "";
+  $("#rot").disabled = true; $("#proof").innerHTML = ""; $("#vs").innerHTML = ""; setMode("run", "RE-KEYING", "#ff77a8");
   try {
-    const {job} = await api("/api/rotate", {job: JOB, secret: "rotated-" + Math.random().toString(36).slice(2)});
+    const {job} = await api("/api/rotate", {job: JOB, secret: "rotated-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)});
     await wait(job, $("#rotst"));
     const c = await api(`/api/compare?a=${JOB}&b=${job}`);
-    $("#rotst").innerHTML = "✅ Second release produced with a fresh secret.";
-    $("#proof").innerHTML = `
-      <div class="stat g"><b>${num(c.same_psn)}/${num(c.records)}</b><span>records with the same pseudonym in both releases</span></div>
-      <div class="stat g"><b>${num(c.psn_overlap)}</b><span>pseudonyms shared between releases (of ${num(c.psns)})</span></div>
-      <div class="stat a"><b>${c.linkage_same ? "identical" : "differs"}</b><span>patient grouping (linkage quality is secret-independent)</span></div>
-      <div class="stat v"><b>${num(c.files - c.identical_files)}/${num(c.files)}</b><span>released files that changed (new pseudonyms + date shifts)</span></div>
-      ${c.example ? `<div class="card" style="grid-column:1/-1"><span class="note">Example: ${esc(c.example.record)}</span><br>
-        release 1 → <span class="psn">${esc(c.example.a)}</span> &nbsp; release 2 → <span class="psn">${esc(c.example.b)}</span></div>` : ""}`;
-  } catch (e) { $("#rotst").innerHTML = "❌ " + esc(e.message); }
+    $("#rotst").innerHTML = "★ Second release produced with a fresh secret.";
+    if (c.example) {
+      $("#vs").innerHTML = `<div class="vs"><div class="vault"><div class="note">release 1</div><span id="v1"></span><div class="psn">${esc(c.example.a)}</div></div>
+        <canvas id="neq"></canvas><div class="vault"><div class="note">release 2</div><span id="v2"></span><div class="psn">${esc(c.example.b)}</div></div></div>
+        <p class="note" style="text-align:center">same record (${esc(c.example.record)}), unlinkable pseudonyms</p>`;
+      $("#v1").appendChild(spriteCanvas(PERSON, 5, {c: hashCol(c.example.a)}));
+      $("#v2").appendChild(spriteCanvas(PERSON, 5, {c: hashCol(c.example.b)}));
+      setPx($("#neq"), "=/=", 5, "#ff004d");
+    }
+    const tiles = [
+      [c.same_psn, `of ${num(c.records)} records keep their pseudonym`, "#00e436"],
+      [c.psn_overlap, `pseudonyms shared (of ${num(c.psns)})`, "#00e436"],
+      [c.linkage_same ? "YES" : "NO", "patient grouping identical (linkage does not depend on the key)", "#29adff"],
+      [c.files - c.identical_files, `of ${num(c.files)} released files changed`, "#ffec27"],
+    ];
+    $("#proof").innerHTML = tiles.map((k, i) => `<div class="pbox stat"><canvas id="pf${i}"></canvas><div class="lbl">${k[1]}</div></div>`).join("");
+    tiles.forEach(([v, , col], i) => typeof v === "string" ? setPx($("#pf" + i), v, 4, col) : countUp($("#pf" + i), v, 4, col));
+    setMode("done", "UNLINKABLE!", "#00e436");
+  } catch (e) { $("#rotst").innerHTML = "✖ " + esc(e.message); setMode("idle", "ERROR", "#ff004d"); }
   $("#rot").disabled = false;
 };
 </script>

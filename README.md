@@ -46,7 +46,7 @@ pip install -r requirements.txt
 python ui/server.py              # opens http://127.0.0.1:8765  (--port N, --no-browser)
 ```
 
-Tabs: **Overview** (files, identifiers removed by type, quarantine reasons, timing) · **Files: before / after**
+Pixel-art "control room": an animated pipeline (files flow through INGEST, DETECT, LINK, PRIVACY and GATE; PII sparks are zapped; unsafe files drop into quarantine), a robot guard mascot and count-up counters, all drawn in code (no external fonts or images, works offline). Tabs: **Overview** (files, identifiers removed by type, quarantine reasons, timing) · **Files: before / after**
 (original vs released, side by side, removed text highlighted) · **Linked patients** (one keyed pseudonym across
 English, Devanagari and Hinglish records) · **Try it live** (paste a note / CSV / JSON) · **Privacy proof**
 (re-run with a new secret: 0 pseudonyms shared, identical grouping). Use a long random `RAKSHA_SECRET`: the
