@@ -434,6 +434,12 @@ class PiiHarvester:
         self.masked_aadhaar_last4: set[str] = set()
         self._sweep_rx: re.Pattern[str] | None = None
         self._digit_rx: re.Pattern[str] | None = None
+        # Exact pre-filters (same results, far fewer regex scans): every sweep match starts with a whole word that is
+        # the first word of some phrase, and every digit-core match is a whole maximal digit run.
+        self._sweep_first: dict[str, list[tuple[str, int]]] | None = None
+        self._sweep_odd: dict[str, list[tuple[str, int]]] = {}
+        self._sweep_odd_rx: re.Pattern[str] | None = None
+        self._digit_set: frozenset[str] = frozenset()
 
     def add_name(self, name: str) -> None:
         clean = " ".join(name.strip(" .,;:\t()[]'\"").split())
@@ -494,6 +500,25 @@ class PiiHarvester:
         if phrases:
             # Longest first so multi-word names match before single tokens
             ordered = sorted(phrases, key=lambda s: (-len(s), s))
+            # Phrases indexed by their first word, in alternation order: the same leftmost, first-alternative match as
+            # the big regex below, but each word start only tries the phrases that can begin there.
+            # Phrases that start outside the word class ("+91 ...") are indexed by their first character instead.
+            by_first: dict[str, list[tuple[str, int]]] = {}
+            odd: dict[str, list[tuple[str, int]]] = {}
+            for ph in ordered:
+                fm = _SWEEP_WORD_RX.match(ph)
+                if fm is not None:
+                    by_first.setdefault(fm.group(0).casefold(), []).append((ph.casefold(), len(ph)))
+                elif len(ph[0].casefold()) == 1:
+                    odd.setdefault(ph[0].casefold(), []).append((ph.casefold(), len(ph)))
+                else:  # exotic first character: keep the plain regex path
+                    by_first, odd = {}, {}
+                    break
+            self._sweep_first = by_first if (by_first or odd) else None
+            self._sweep_odd = odd
+            self._sweep_odd_rx = (
+                re.compile("[" + "".join(re.escape(c) for c in sorted(odd)) + "]", re.I) if odd else None
+            )
             escaped = [re.escape(p) for p in ordered]
             self._sweep_rx = re.compile(
                 r"(?i)(?<![A-Za-z0-9\u0900-\u097f])(?:" + "|".join(escaped) + r")(?![A-Za-z0-9\u0900-\u097f])"
@@ -501,6 +526,7 @@ class PiiHarvester:
         if self.digit_cores:
             # Match bare digit cores >= 5 digits (e.g. inside paths _084999 or filenames)
             d_ord = sorted((d for d in self.digit_cores if len(d) >= 5), key=lambda s: (-len(s), s))
+            self._digit_set = frozenset(d_ord)
             if d_ord:
                 self._digit_rx = re.compile(r"(?<!\d)(?:" + "|".join(re.escape(d) for d in d_ord) + r")(?!\d)")
 
@@ -508,15 +534,42 @@ class PiiHarvester:
         spans: list[Span] = []
         shadow = shadow_normalize(text)
         if self._sweep_rx is not None:
-            for m in self._sweep_rx.finditer(shadow):
-                raw = text[m.start() : m.end()]
+            if self._sweep_first is None:
+                hits = [(m.start(), m.end()) for m in self._sweep_rx.finditer(shadow)]
+            else:
+                hits, pos, n = [], 0, len(shadow)
+                # Candidate starts in text order: word starts (normal phrases) and odd first characters (preceded by
+                # a non-word character, as the regex look-behind requires). A position belongs to one group only.
+                starts = [(w.start(), self._sweep_first.get(w.group(0).casefold(), ())) for w in _SWEEP_WORD_RX.finditer(shadow)]
+                if self._sweep_odd_rx is not None:
+                    for c in self._sweep_odd_rx.finditer(shadow):
+                        p0 = c.start()
+                        if p0 == 0 or _SWEEP_WORD_RX.match(shadow[p0 - 1]) is None:
+                            starts.append((p0, self._sweep_odd.get(c.group(0).casefold(), ())))
+                    starts.sort(key=lambda x: x[0])
+                for st, cands in starts:
+                    if st < pos:
+                        continue
+                    for phf, ln in cands:
+                        end = st + ln
+                        if end <= n and shadow[st:end].casefold() == phf and _SWEEP_WORD_RX.match(shadow, end) is None:
+                            hits.append((st, end))
+                            pos = end
+                            break
+            for s, e in hits:
+                raw = text[s:e]
                 kind = "MRN" if raw in self.exact_ids else ("VILLAGE" if raw in self.address_phrases else "PATIENT_NAME")
-                spans.append(Span(m.start(), m.end(), kind, raw, script=detect_script(raw)))
+                spans.append(Span(s, e, kind, raw, script=detect_script(raw)))
         if self._digit_rx is not None:
-            for m in self._digit_rx.finditer(shadow):
-                raw = text[m.start() : m.end()]
-                spans.append(Span(m.start(), m.end(), "MRN", raw, script=detect_script(raw)))
+            for m in _DIGIT_RUN_RX.finditer(shadow):
+                if m.group(0) in self._digit_set:
+                    raw = text[m.start() : m.end()]
+                    spans.append(Span(m.start(), m.end(), "MRN", raw, script=detect_script(raw)))
         return spans
+
+
+_SWEEP_WORD_RX = re.compile(r"(?i)[A-Za-z0-9\u0900-\u097f]+")
+_DIGIT_RUN_RX = re.compile(r"\d+")
 
 
 def split_safe_chunks(text: str, max_len: int = 32768) -> list[str]:
